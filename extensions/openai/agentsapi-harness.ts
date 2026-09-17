@@ -1,4 +1,7 @@
-import { abortAndDrainAgentHarnessRun, type AgentHarnessV2 } from "openclaw/plugin-sdk/agent-harness-runtime";
+import {
+  abortAndDrainAgentHarnessRun,
+  type AgentHarnessV2,
+} from "openclaw/plugin-sdk/agent-harness-runtime";
 import type { PluginRuntime } from "openclaw/plugin-sdk/plugin-runtime";
 
 /** Explicit MVP harness; the existing OpenAI runtime defaults remain unchanged. */
@@ -33,8 +36,11 @@ export function createAgentsApiHarness(runtime: PluginRuntime): AgentHarnessV2 {
       const { runAgentsApiAttempt } = await import("./agentsapi-attempt.js");
       assertCurrent();
       runningSessions.add(params.sessionId);
-      try { return await runAgentsApiAttempt(params, runtime, assertCurrent); }
-      finally { runningSessions.delete(params.sessionId); }
+      try {
+        return await runAgentsApiAttempt(params, runtime, assertCurrent);
+      } finally {
+        runningSessions.delete(params.sessionId);
+      }
     },
     reset: async (params) => {
       if (params.sessionId) {
@@ -60,12 +66,18 @@ export function createAgentsApiHarness(runtime: PluginRuntime): AgentHarnessV2 {
           removed = store.delete(params.sessionId);
         },
         rollback: () => {
-          if (removed && binding) { store.registerIfAbsent(params.sessionId, binding); }
+          if (removed && binding) {
+            store.registerIfAbsent(params.sessionId, binding);
+          }
         },
       });
     },
     dispose: async () => {
-      await Promise.all([...runningSessions].map((sessionId) => abortAndDrainAgentHarnessRun({ sessionId, settleMs: 95_000 })));
+      await Promise.all(
+        [...runningSessions].map((sessionId) =>
+          abortAndDrainAgentHarnessRun({ sessionId, settleMs: 95_000 }),
+        ),
+      );
       disposed = true;
     },
   };
