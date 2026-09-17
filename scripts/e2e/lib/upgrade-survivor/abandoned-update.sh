@@ -69,5 +69,21 @@ run_abandoned_update_survivor() {
   phase assert-post-core-recovery node "$helper" recovered-post-core "$OPENCLAW_STATE_DIR" "$ARTIFACT_ROOT"
   phase restored-gateway-probes check_gateway_probes
   phase restored-gateway-status check_gateway_status
+  phase deadline-channel openclaw config set update.channel stable
+  local deadline_helper="scripts/e2e/lib/upgrade-survivor/abandoned-update-deadline.mjs"
+  local deadline_hook
+  deadline_hook="$(node "$deadline_helper" hook "$(package_root)" "$ARTIFACT_ROOT")"
+  node "$helper" service "$SYSTEMCTL_SHIM_PID_FILE" "$SYSTEMCTL_SHIM_LOG" \
+    "$ARTIFACT_ROOT/deadline-service-before.json"
+  repair_status=0
+  NODE_OPTIONS="${NODE_OPTIONS:-} --import $deadline_hook" \
+    openclaw_e2e_maybe_timeout "$COMMAND_TIMEOUT" openclaw update repair --yes --json --channel stable --timeout 15 \
+    >"$ARTIFACT_ROOT/deadline-repair.json" 2>"$ARTIFACT_ROOT/deadline-repair.err" || repair_status=$?
+  printf '%s\n' "$repair_status" >"$ARTIFACT_ROOT/deadline-repair.exit"
+  node "$helper" service "$SYSTEMCTL_SHIM_PID_FILE" "$SYSTEMCTL_SHIM_LOG" \
+    "$ARTIFACT_ROOT/deadline-service-after.json"
+  phase assert-deadline-recovery node "$deadline_helper" verify "$OPENCLAW_STATE_DIR" "$ARTIFACT_ROOT"
+  phase deadline-gateway-probes check_gateway_probes
+  phase deadline-gateway-status check_gateway_status
   echo "Published $baseline_version stale run repaired without interruption; post-core repair restored the service under its update parent."
 }

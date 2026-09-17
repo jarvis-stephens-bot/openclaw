@@ -24,9 +24,10 @@ import { assertUpdateRecoveryAdmission } from "../../infra/update-run-recovery-a
 import { loadInstalledPluginIndexInstallRecords } from "../../plugins/installed-plugin-index-records.js";
 import { withPluginLifecycleLease } from "../../plugins/plugin-lifecycle-lease.js";
 import { withCommandProcessScope } from "../../process/exec-spawn.js";
-import { defaultRuntime } from "../../runtime.js";
+import { createNonExitingRuntime, defaultRuntime } from "../../runtime.js";
 import { resolveOpenClawStateSqlitePath } from "../../state/openclaw-state-db.paths.js";
 import { assertOpenClawStateWriteAllowedAtPath } from "../../state/openclaw-state-ownership.js";
+import { exitCliAfterOutput } from "../one-shot-exit.js";
 import { retainCliProcessJobUntilExit } from "../runtime-cleanup-scope.js";
 import {
   parseTimeoutMsOrExit,
@@ -54,12 +55,19 @@ import {
   updatePluginsAfterCoreUpdate,
   type PostCorePluginUpdateResult,
 } from "./update-command-plugins.js";
-import { UpdateCommandFailure, withUpdateAdmissionReporting } from "./update-command-result.js";
+import {
+  UpdateCommandFailure,
+  UpdateCommandFinalizedRecoveryFailure,
+  withUpdateAdmissionReporting,
+} from "./update-command-result.js";
 import { completeSourceUpdateRuntime } from "./update-command-runtime.js";
 import { resolveServiceRefreshEnv, withUpdateInProgressEnv } from "./update-command-service-env.js";
 import { reportPreMutationUpdateResult } from "./update-command-terminal.js";
 import { withUpdateFailureTriage } from "./update-command-triage.js";
-import { UpdateFinalizationLifecycle } from "./update-finalization-lifecycle.js";
+import {
+  UpdateFinalizationLifecycle,
+  type UpdateFinalizationPhase,
+} from "./update-finalization-lifecycle.js";
 
 export async function updateFinalizeCommand(
   opts: UpdateFinalizeOptions,
@@ -87,7 +95,7 @@ export async function updateFinalizeCommand(
         opts,
         () =>
           withUpdateInProgressEnv(invocationCwd, () =>
-            lifecycle.run("preflight", async () => {
+            lifecycle.run("preflight", async (phase) => {
               // Refused invocations cannot create a ledger or write failure-triage artifacts.
               // A missing canonical path can be an interrupted publication, not a
               // fresh installation. Only the recovery executor may reconcile it.
@@ -98,6 +106,7 @@ export async function updateFinalizeCommand(
                 recoverOrphanedSidecars: false,
               });
               await retainCliProcessJobUntilExit();
+              phase.assertCurrent();
               // Public repair supplies a recovery selection, even when it is empty.
               const admittedRunId = lifecycle.attachLedger(recoveryRunIds !== undefined);
               const resolvedRoot = await resolveUpdateRoot();
@@ -127,8 +136,8 @@ export async function updateFinalizeCommand(
         () =>
           withUpdateInProgressEnv(invocationCwd, async () => {
             try {
-              const prepared = await lifecycle.run("targetConfigValidation", () =>
-                prepareUpdateFinalization(opts, root, installKind, requestedChannel),
+              const prepared = await lifecycle.run("targetConfigValidation", (phase) =>
+                prepareUpdateFinalization(opts, root, installKind, requestedChannel, phase),
               );
               await updateFinalizeCommandInternal(
                 opts,
@@ -149,6 +158,10 @@ export async function updateFinalizeCommand(
           }),
       );
     } catch (error) {
+      if (error instanceof UpdateCommandFinalizedRecoveryFailure) {
+        lifecycle.complete(error.exitCode);
+        exitCliAfterOutput(defaultRuntime, error.exitCode);
+      }
       if (!lifecycle.completed) {
         lifecycle.fail();
       }
@@ -164,6 +177,7 @@ async function prepareUpdateFinalization(
   root: string,
   installKind: "git" | "package" | "unknown",
   requestedChannel: UpdateChannel | null,
+  phase: UpdateFinalizationPhase,
 ) {
   await assertOpenClawStateWriteAllowedAtPath({
     databasePath: resolveOpenClawStateSqlitePath(process.env),
@@ -203,9 +217,13 @@ async function prepareUpdateFinalization(
   );
   const channel = requestedChannel ?? storedChannel ?? effectiveChannel ?? DEFAULT_PACKAGE_CHANNEL;
   if (requestedChannel) {
-    configSnapshot = await withPluginLifecycleLease({}, async () => {
+    configSnapshot = await withPluginLifecycleLease(phase, async () => {
       const snapshot = await readConfigFileSnapshot({ skipPluginValidation: true });
-      return await persistRequestedUpdateChannel({ configSnapshot: snapshot, requestedChannel });
+      return await persistRequestedUpdateChannel({
+        configSnapshot: snapshot,
+        requestedChannel,
+        assertCurrent: phase.assertCurrent,
+      });
     });
   }
   return {
@@ -254,37 +272,46 @@ async function updateFinalizeCommandInternal(
       });
     }
     const initialPluginUpdate = await withPrePluginUpdateDoctorEnv(async () => {
-      await lifecycle.run("configSnapshot", createUpdateConfigSnapshot);
-      await lifecycle.run("doctor", async () => {
-        if (repair) {
-          const { beginDoctorMaintenance } = await import("../../commands/doctor-maintenance.js");
-          maintenance = await beginDoctorMaintenance({
+      await lifecycle.run("configSnapshot", () => createUpdateConfigSnapshot());
+      await lifecycle.run(
+        "doctor",
+        () =>
+          runUpdateFinalizationDoctorInFreshProcess({
+            phase: "pre-plugin",
             root,
             runId: invokingRunId,
-            options: { repair: true, nonInteractive: true, json: opts.json },
-            runtime: { ...defaultRuntime, log: defaultRuntime.error },
-          });
-          // Doctor acquires its own database fences; the parent retains only service custody.
-          await maintenance?.releaseState();
-        }
-        await runUpdateFinalizationDoctorInFreshProcess({
-          phase: "pre-plugin",
-          root,
-          runId: invokingRunId,
-          yes: opts.yes === true,
-          json: opts.json === true,
-          workspaceSuggestions: true,
-          timeoutMs: lifecycle.budget("doctor"),
-          onWarnings: onDoctorWarnings,
-        });
-      });
+            yes: opts.yes === true,
+            json: opts.json === true,
+            workspaceSuggestions: true,
+            timeoutMs: lifecycle.budget("doctor"),
+            onWarnings: onDoctorWarnings,
+          }),
+        undefined,
+        {
+          enter: async () => {
+            if (!repair) {
+              return;
+            }
+            const { beginDoctorMaintenance } = await import("../../commands/doctor-maintenance.js");
+            maintenance = await beginDoctorMaintenance({
+              root,
+              runId: invokingRunId,
+              options: { repair: true, nonInteractive: true, json: opts.json },
+              runtime: { ...defaultRuntime, log: defaultRuntime.error },
+            });
+            // Fresh Doctor owns database fences; the parent retains service custody.
+            await maintenance?.releaseState();
+          },
+        },
+      );
       return await lifecycle.run(
         "plugins",
-        () =>
-          withPluginLifecycleLease({}, async () => {
+        (phase) =>
+          withPluginLifecycleLease(phase, async () => {
             const preparedConfig = await preparePostCorePluginConfig({
               requestedChannel,
               preUpdateConfig: preFinalizeConfig,
+              assertCurrent: phase.assertCurrent,
             });
             configSnapshot = preparedConfig.configSnapshot;
             const postDoctorStoredChannel = configSnapshot.valid
@@ -305,6 +332,8 @@ async function updateFinalizeCommandInternal(
               acceptCapabilities: opts.acceptCapabilities,
               timeoutMs: lifecycle.budget("plugins"),
               pluginInstallRecords,
+              assertCurrent: phase.assertCurrent,
+              runtime: createNonExitingRuntime(),
             });
           }),
         pluginOutcome,
@@ -313,7 +342,7 @@ async function updateFinalizeCommandInternal(
     // Fresh Doctor acquires this same lease; convergence must run after release.
     const completedPluginUpdate = await lifecycle.run(
       "targetConfigConvergence",
-      async () => {
+      async (phase) => {
         const result = await completePostCorePluginUpdate({
           root,
           runId: invokingRunId,
@@ -324,11 +353,11 @@ async function updateFinalizeCommandInternal(
           timeoutMs: lifecycle.budget("targetConfigConvergence"),
           onWarnings: onDoctorWarnings,
         });
-        await persistValidatedDowngradeConfig(result.configSnapshot);
-        await restoreMaintenance(result.configSnapshot.config);
+        await persistValidatedDowngradeConfig(result.configSnapshot, phase.assertCurrent);
         return result;
       },
       (result) => pluginOutcome(result.pluginUpdate),
+      { restore: (result) => restoreMaintenance(result.configSnapshot.config) },
     );
     const pluginUpdate = completedPluginUpdate.pluginUpdate;
     lifecycle.recordWarnings(

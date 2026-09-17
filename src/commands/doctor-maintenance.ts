@@ -124,8 +124,9 @@ export async function beginDoctorMaintenance(params: {
       coordinator.release();
     }
   };
-  const release = async () => {
+  const release = async (assertCustody?: () => void) => {
     await releaseState();
+    assertCustody?.();
     const recovery = stopped?.windowsTaskAutoStartRecovery;
     try {
       await serviceMaintenance?.maybeResumeWindowsTaskAutoStartAfterPackageUpdate(stopped);
@@ -133,8 +134,9 @@ export async function beginDoctorMaintenance(params: {
       await recovery?.complete();
     }
   };
-  const finish = async (cfg: OpenClawConfig) => {
-    await release();
+  const finish = async (cfg: OpenClawConfig, assertCustody?: () => void) => {
+    await release(assertCustody);
+    assertCustody?.();
     const before = stopped;
     const root = params.root;
     if (!before?.stopped || !before.serviceEnv || !root) {
@@ -158,6 +160,7 @@ export async function beginDoctorMaintenance(params: {
       const service = resolveGatewayService();
       const state = await withGatewayServiceOperationLock(serviceEnv, async (assertCurrent) => {
         const assertMaintenanceCurrent = () => {
+          assertCustody?.();
           assertCurrent();
           assertUpdateAdmissionCurrent?.();
         };
@@ -394,11 +397,32 @@ export async function beginDoctorMaintenance(params: {
     }
     throw refusal;
   }
-  return {
+  let custody: "held" | "restoring" | "released" = "held";
+  const maintenance = {
     warnings,
-    run: (operation) => resources!.run(operation),
-    release,
+    run: <T>(operation: () => T) => resources!.run(operation),
     releaseState,
-    finish,
+    async release() {
+      if (this !== maintenance) {
+        throw new Error("Gateway restoration requires its original live maintenance owner.");
+      }
+      custody = "released";
+      await release();
+    },
+    async finish(cfg: OpenClawConfig) {
+      const assertCustody = (expected: typeof custody = "restoring") => {
+        if (this !== maintenance || custody !== expected) {
+          throw new Error("Gateway restoration requires its original live maintenance owner.");
+        }
+      };
+      assertCustody("held");
+      custody = "restoring";
+      try {
+        await finish(cfg, assertCustody);
+      } finally {
+        custody = "released";
+      }
+    },
   };
+  return maintenance;
 }

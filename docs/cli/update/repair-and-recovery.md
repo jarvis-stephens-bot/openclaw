@@ -232,7 +232,11 @@ still overrides each phase and its child commands.
 
 A phase deadline produces exit code 1 and JSON with `status: "failed"`,
 `stuckPhase`, `elapsedMs`, `error`, and the existing `phaseTimings` array. The
-finalizer requests termination of its owned command trees before exiting.
+finalizer cancels the phase, fences further writes, and waits up to the same
+budget for its work to settle. Repair restores and verifies the Gateway it
+stopped before reporting the failure and exiting. Service custody acquisition
+and restoration retain their own native-operation budgets outside phase
+cancellation. The ledger records a warning naming the timed-out phase and budget.
 Preserve the phase diagnostic when reporting a stalled update.
 
 When a fresh Doctor ran in the timed-out phase, `doctorOutput` includes its
