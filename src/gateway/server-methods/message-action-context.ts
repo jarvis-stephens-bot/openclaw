@@ -22,7 +22,34 @@ import {
   type MessageActionAuthorization,
 } from "../message-action-turn-capability.js";
 import { createAgentRuntimeAuthorityGuard } from "./agent-runtime-authority.js";
-import type { GatewayRequestHandlers } from "./types.js";
+import type { GatewayClient, GatewayRequestHandlers } from "./types.js";
+
+/** Redeem host-only message authority from a trusted local agent runtime. */
+export function resolveAgentRuntimeMessageActionAuthorization(
+  client: GatewayClient | null,
+): MessageActionAuthorization | undefined {
+  const identity = client?.internal?.agentRuntimeIdentity;
+  const messageActionContext = identity?.messageActionContext;
+  return identity && messageActionContext?.turnCapability
+    ? resolveMessageActionTurnAuthorization({
+        token: messageActionContext.turnCapability,
+        agentId: identity.agentId,
+        runId: identity.operationalRunInstance.runId,
+        sessionKey: identity.sessionKey,
+        sessionId: messageActionContext.sessionId,
+      })
+    : undefined;
+}
+
+/** Resolve the admitted config only while the matching bound action is dispatched. */
+export function resolveAgentRuntimeMessageActionConfig(
+  client: GatewayClient | null,
+): OpenClawConfig | undefined {
+  const token = client?.internal?.agentRuntimeIdentity?.messageActionContext?.turnCapability;
+  return resolveAgentRuntimeMessageActionAuthorization(client)?.scheduled
+    ? readMessageActionInvocationConfig(token)
+    : undefined;
+}
 
 /** Retain the live caller and scheduled source through this action's requests. */
 export function createMessageActionRuntimeAuthority(
@@ -140,15 +167,7 @@ export function resolveTrustedMessageActionToolContext(params: {
       ),
     };
   }
-  const messageActionAuthorization = messageActionContext.turnCapability
-    ? resolveMessageActionTurnAuthorization({
-        token: messageActionContext.turnCapability,
-        agentId: identity.agentId,
-        runId: identity.operationalRunInstance.runId,
-        sessionKey: identity.sessionKey,
-        sessionId: messageActionContext.sessionId,
-      })
-    : undefined;
+  const messageActionAuthorization = resolveAgentRuntimeMessageActionAuthorization(params.client);
   return {
     ok: true,
     toolContext: messageActionContext.toolContext,

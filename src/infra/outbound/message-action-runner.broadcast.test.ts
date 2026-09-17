@@ -51,6 +51,16 @@ describe("broadcast send outcomes through native actions", () => {
       ok: false,
       sentBeforeError: true,
     },
+    {
+      name: "canonical partial status",
+      payload: {
+        deliveryStatus: "partial_failed",
+        error: "second canonical part failed",
+        result: { messageId: "sent-part" },
+      },
+      ok: false,
+      sentBeforeError: true,
+    },
     { name: "native success", payload: { ok: true, messageId: "sent-native" }, ok: true },
     { name: "legacy empty success", payload: {}, ok: true },
     {

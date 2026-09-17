@@ -176,6 +176,27 @@ function resolveThreadedSourceTarget(
   );
 }
 
+function hasAcceptedPartialDelivery(payload: unknown, depth = 0): boolean {
+  if (!payload || typeof payload !== "object" || depth > 4) {
+    return false;
+  }
+  if (Array.isArray(payload)) {
+    return payload.some((value) => hasAcceptedPartialDelivery(value, depth + 1));
+  }
+  const record = payload as Record<string, unknown>;
+  const status = normalizeOptionalLowercaseString(record.status);
+  const deliveryStatus = normalizeOptionalLowercaseString(record.deliveryStatus);
+  return (
+    record.sentBeforeError === true ||
+    record.visibleReplySent === true ||
+    status === "partial_failed" ||
+    deliveryStatus === "partial_failed" ||
+    ["details", "payload", "result", "results", "sendResult", "toolResult"].some((key) =>
+      hasAcceptedPartialDelivery(record[key], depth + 1),
+    )
+  );
+}
+
 function hasExplicitDeliveryFailure(payload: unknown, depth = 0): boolean {
   if (!payload || typeof payload !== "object" || depth > 4) {
     return false;
@@ -291,7 +312,10 @@ export async function reconcileTerminalSourceReplyDelivery(params: {
   if (!params.receipt) {
     return "not-applicable";
   }
-  if (hasExplicitDeliveryFailure(params.deliveredPayload)) {
+  if (
+    hasExplicitDeliveryFailure(params.deliveredPayload) &&
+    !hasAcceptedPartialDelivery(params.deliveredPayload)
+  ) {
     if (params.preservePendingOnExplicitFailure) {
       return "pending";
     }
@@ -489,7 +513,10 @@ function resolveDeliveredCurrentSourceReply(
   params: SourceReplyTranscriptMirrorParams,
   allowAsync: boolean,
 ): SourceReplyMatch {
-  if (hasExplicitDeliveryFailure(params.deliveredPayload)) {
+  if (
+    hasExplicitDeliveryFailure(params.deliveredPayload) &&
+    !hasAcceptedPartialDelivery(params.deliveredPayload)
+  ) {
     return false;
   }
   switch (params.action.trim().toLowerCase()) {

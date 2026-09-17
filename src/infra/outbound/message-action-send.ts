@@ -22,12 +22,15 @@ import {
   type ReplyPayloadDelivery,
 } from "../../interactive/payload.js";
 import type { AssistantDeliveryTtsFacts } from "../../llm/types.js";
+import { createSubsystemLogger } from "../../logging/subsystem.js";
 import { resolveAgentScopedOutboundMediaAccess } from "../../media/read-capability.js";
 import { readBooleanParam } from "../../plugin-sdk/boolean-param.js";
+import { withChannelReadAuthority } from "../../shared/channel-read-authority.js";
 import { stripUnsupportedCitationControlMarkers } from "../../shared/text/citation-control-markers.js";
 import { findCodeRegions } from "../../shared/text/code-regions.js";
 import { stripFormattedReasoningMessage } from "../../shared/text/formatted-reasoning-message.js";
 import { parseInlineDirectives } from "../../utils/directive-tags.js";
+import { formatErrorMessage } from "../errors.js";
 import { throwIfAborted } from "./abort.js";
 import type {
   MessageActionInput,
@@ -59,6 +62,8 @@ import {
   materializeMessagePresentationFallback,
 } from "./outbound-send-service.js";
 import { ensureOutboundSessionEntry, resolveOutboundSessionRoute } from "./outbound-session.js";
+
+const log = createSubsystemLogger("outbound/message-action-send");
 
 function resolveReplyMediaAttachmentType(value: unknown): ReplyMediaAttachment["type"] {
   return value === "image" || value === "audio" || value === "video" || value === "file"
@@ -246,18 +251,24 @@ export async function buildMessagePayload(params: {
   applySendLocationToActionParams(actionParams, location);
 
   if (params.channel && params.target) {
-    message = await applyMessageCrossContextMarker({
-      cfg: params.cfg,
-      channel: params.channel,
-      action: "send",
-      target: params.target,
-      toolContext: input.toolContext,
-      accountId: params.accountId,
-      agentId: params.agentId,
-      args: actionParams,
-      message,
-      preferPresentation: true,
-    });
+    const channel = params.channel;
+    const target = params.target;
+    message = await withChannelReadAuthority(
+      input.messageActionAuthorization?.scheduled ? input.assertDirectAdapterHandoff : undefined,
+      () =>
+        applyMessageCrossContextMarker({
+          cfg: params.cfg,
+          channel,
+          action: "send",
+          target,
+          toolContext: input.toolContext,
+          accountId: params.accountId,
+          agentId: params.agentId,
+          args: actionParams,
+          message,
+          preferPresentation: true,
+        }),
+    );
   }
 
   const mediaUrl = readToolStringParam(actionParams, "media", { trim: false });
@@ -454,13 +465,21 @@ export async function executeMessageSend(ctx: ResolvedActionContext): Promise<Me
       return;
     }
     outboundRoutePersisted = true;
-    await ensureOutboundSessionEntry({
-      cfg,
-      channel,
-      accountId,
-      route: outboundRoute,
-      sourceSessionKey: input.sessionKey,
-    });
+    try {
+      await ensureOutboundSessionEntry({
+        cfg,
+        channel,
+        accountId,
+        route: outboundRoute,
+        sourceSessionKey: input.sessionKey,
+      });
+    } catch (error) {
+      // Provider evidence owns the result. Session bookkeeping cannot turn an
+      // accepted write into a retryable failure.
+      log.warn(
+        `failed to persist outbound route; provider result preserved: ${formatErrorMessage(error)}`,
+      );
+    }
   };
   throwIfAborted(abortSignal);
 

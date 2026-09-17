@@ -488,6 +488,8 @@ export async function deliverOutboundPayloadsCore(
         target: deliveryTarget(),
         messageId: firstMessageId,
         gatewayClientScopes: params.gatewayClientScopes,
+        onPlatformSendDispatch: params.onPlatformSendDispatch,
+        assertDirectAdapterHandoff: params.assertDirectAdapterHandoff,
       });
       await maybeNotifyAfterDeliveredPayload({
         handler: deliveryHandler,

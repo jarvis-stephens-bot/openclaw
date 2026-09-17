@@ -60,7 +60,14 @@ export function createMessageToolGateway(
       )
     : undefined;
   const { target, ...connection } = resolveGatewayOptions(gatewayOpts);
+  const requireBoundScheduledGateway =
+    invocation?.hasScheduledAuthority && !boundRequest
+      ? async <T>(): Promise<T> => {
+          throw new Error("Scheduled message actions require an active bound Gateway.");
+        }
+      : undefined;
   const callerOwnsTerminalReceipt =
+    !requireBoundScheduledGateway &&
     !boundRequest &&
     (target === "remote" ||
       Boolean(gatewayOpts.gatewayUrl?.trim() || gatewayOpts.gatewayToken?.trim()));
@@ -79,27 +86,29 @@ export function createMessageToolGateway(
     clientDisplayName: "agent",
     mode: GATEWAY_CLIENT_MODES.BACKEND,
     ...(callerOwnsTerminalReceipt ? { terminalSourceReplyReceiptOwner: "caller" } : {}),
-    ...(boundRequest
-      ? {
-          request: async <T>(
-            request: OutboundGatewayRequest,
-            context?: OutboundGatewayRequestContext,
-          ) => {
-            const identity = await resolveMessageActionAgentRuntimeIdentity({
-              ...identityParams,
-              ...context,
-            });
-            return boundRequest<T>(
-              withAgentToolGatewayRuntimeIdentity(
-                { ...request, signal: request.signal ?? signal },
-                identity,
-              ),
-            );
-          },
-        }
-      : {
-          resolveAgentRuntimeIdentityToken: (context?: OutboundGatewayRequestContext) =>
-            resolveMessageActionAgentRuntimeIdentityToken({ ...identityParams, ...context }),
-        }),
+    ...(requireBoundScheduledGateway
+      ? { request: requireBoundScheduledGateway }
+      : boundRequest
+        ? {
+            request: async <T>(
+              request: OutboundGatewayRequest,
+              context?: OutboundGatewayRequestContext,
+            ) => {
+              const identity = await resolveMessageActionAgentRuntimeIdentity({
+                ...identityParams,
+                ...context,
+              });
+              return boundRequest<T>(
+                withAgentToolGatewayRuntimeIdentity(
+                  { ...request, signal: request.signal ?? signal },
+                  identity,
+                ),
+              );
+            },
+          }
+        : {
+            resolveAgentRuntimeIdentityToken: (context?: OutboundGatewayRequestContext) =>
+              resolveMessageActionAgentRuntimeIdentityToken({ ...identityParams, ...context }),
+          }),
   };
 }

@@ -3,6 +3,7 @@ import { createDeferred, withTestTimeout } from "../../../test/helpers/promise.j
 import type { ChannelOutboundContext } from "../../channels/plugins/outbound.types.js";
 import type { ChannelPollContext } from "../../channels/plugins/types.core.js";
 import type { ChannelPlugin } from "../../channels/plugins/types.public.js";
+import { createChannelPartialDeliveryError } from "../../channels/turn/delivery-result.js";
 import {
   clearRuntimeConfigSnapshot,
   setRuntimeConfigSnapshot,
@@ -17,6 +18,12 @@ import {
 } from "../../cron/active-jobs.js";
 import { prepareCronPromptRunAdmission } from "../../cron/isolated-agent/run-admission.js";
 import { registerActiveCronTaskRun } from "../../cron/service/active-run-cancellation.js";
+import { createAgentRuntimeApprovalAuthorityValidator } from "../../gateway/agent-runtime-identity-token.js";
+import { createGatewayMethodRegistry } from "../../gateway/methods/registry.js";
+import type {
+  GatewayRequestContext,
+  GatewayRequestHandler,
+} from "../../gateway/server-methods/types.js";
 import { recoverPendingDeliveries } from "../../infra/outbound/delivery-queue-recovery.js";
 import { loadUnfinishedDeliveries } from "../../infra/outbound/delivery-queue-storage.js";
 import {
@@ -24,6 +31,7 @@ import {
   restoreActivePluginRegistrySnapshot,
   setActivePluginRegistry,
 } from "../../plugins/runtime.js";
+import { withPluginRuntimeGatewayContextResolver } from "../../plugins/runtime/gateway-request-scope.js";
 import {
   createChannelTestPluginBase,
   createTestRegistry,
@@ -31,6 +39,10 @@ import {
 import { createOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { resolveConversationCapabilityProfile } from "../conversation-capability-profile.js";
 import { createEmbeddedMessageInvocationPolicy } from "../scheduled-message-invocation.js";
+import {
+  createAdmittedGatewayToolCallerIdentity,
+  withGatewayToolCallerIdentity,
+} from "./gateway-caller-context.js";
 import { createMessageTool } from "./message-tool-execution.js";
 
 it.each([
@@ -41,6 +53,7 @@ it.each([
     retire: noteActiveCronJobMessageActionAuthorityMutation,
     accepted: true,
     laterError: "cron message action authority is no longer active",
+    deliveryMode: "direct" as const,
   },
   {
     cause: "the active job is cancelled",
@@ -50,6 +63,7 @@ it.each([
       requestActiveCronJobCancellation(jobId, "Cron job removed by operator."),
     accepted: true,
     laterError: "Message send aborted",
+    deliveryMode: "direct" as const,
   },
   {
     cause: "message authority closes during provider target lookup",
@@ -58,6 +72,7 @@ it.each([
     retire: noteActiveCronJobMessageActionAuthorityMutation,
     accepted: false,
     laterError: "cron message action authority is no longer active",
+    deliveryMode: "direct" as const,
   },
   {
     cause: "the active job is cancelled after a generic mutation is accepted",
@@ -67,6 +82,7 @@ it.each([
       requestActiveCronJobCancellation(jobId, "Cron job removed by operator."),
     accepted: true,
     laterError: "Message send aborted",
+    deliveryMode: "direct" as const,
   },
   {
     cause: "message authority closes before a refused write retry",
@@ -75,6 +91,7 @@ it.each([
     retire: noteActiveCronJobMessageActionAuthorityMutation,
     accepted: false,
     laterError: "cron message action authority is no longer active",
+    deliveryMode: "direct" as const,
   },
   {
     cause: "message authority closes before a poll provider retry",
@@ -83,10 +100,95 @@ it.each([
     retire: noteActiveCronJobMessageActionAuthorityMutation,
     accepted: false,
     laterError: "cron message action authority is no longer active",
+    deliveryMode: "direct" as const,
   },
+  {
+    cause: "message authority closes before a bound Gateway write retry",
+    revokeAt: "retry" as const,
+    action: "send" as const,
+    retire: noteActiveCronJobMessageActionAuthorityMutation,
+    accepted: false,
+    laterError: "cron message action authority is no longer active",
+    deliveryMode: "gateway" as const,
+  },
+  {
+    cause: "message authority closes before a bound Gateway poll retry",
+    revokeAt: "poll-retry" as const,
+    action: "poll" as const,
+    retire: noteActiveCronJobMessageActionAuthorityMutation,
+    accepted: false,
+    laterError: "cron message action authority is no longer active",
+    deliveryMode: "gateway" as const,
+  },
+  {
+    cause: "message authority closes after a bound Gateway poll is accepted",
+    revokeAt: "poll-provider" as const,
+    action: "poll" as const,
+    retire: noteActiveCronJobMessageActionAuthorityMutation,
+    accepted: true,
+    deliveryMode: "gateway" as const,
+  },
+  {
+    cause: "message authority closes before required delivery pinning",
+    revokeAt: "pin" as const,
+    action: "send" as const,
+    retire: noteActiveCronJobMessageActionAuthorityMutation,
+    accepted: true,
+    partial: true,
+    laterError: "cron message action authority is no longer active",
+    deliveryMode: "direct" as const,
+  },
+  {
+    cause: "message authority closes after the first multipart send",
+    revokeAt: "multipart" as const,
+    action: "send" as const,
+    retire: noteActiveCronJobMessageActionAuthorityMutation,
+    accepted: true,
+    partial: true,
+    laterError: "cron message action authority is no longer active",
+    deliveryMode: "direct" as const,
+  },
+  {
+    cause: "a configured remote Gateway has no active bound host",
+    revokeAt: "unbound" as const,
+    action: "send" as const,
+    retire: noteActiveCronJobMessageActionAuthorityMutation,
+    accepted: false,
+    laterError: "cron message action authority is no longer active",
+    deliveryMode: "gateway" as const,
+  },
+  ...(["direct", "gateway"] as const).map((deliveryMode) => ({
+    cause: `message authority closes after a ${deliveryMode} plugin partial mutation`,
+    revokeAt: "partial-action" as const,
+    action: "set-presence" as const,
+    retire: noteActiveCronJobMessageActionAuthorityMutation,
+    accepted: true,
+    partial: true,
+    laterError: "cron message action authority is no longer active",
+    deliveryMode,
+  })),
+  {
+    cause: "a bound Gateway publishes replacement account config during preparation",
+    revokeAt: "config" as const,
+    action: "send" as const,
+    retire: noteActiveCronJobMessageActionAuthorityMutation,
+    accepted: true,
+    laterError: "cron message action authority is no longer active",
+    deliveryMode: "gateway" as const,
+  },
+  ...(["direct", "gateway"] as const).map((deliveryMode) => ({
+    cause: `message authority closes after a ${deliveryMode} partial poll`,
+    revokeAt: "poll-partial" as const,
+    action: "poll" as const,
+    retire: noteActiveCronJobMessageActionAuthorityMutation,
+    accepted: true,
+    partial: true,
+    laterError: "cron message action authority is no longer active",
+    deliveryMode,
+  })),
 ])(
   "owns scheduled message lifetime when $cause",
-  async ({ revokeAt, action, retire, accepted, laterError }) => {
+  async ({ revokeAt, action, retire, accepted, partial, laterError, deliveryMode }) => {
     const registry = captureActivePluginRegistrySnapshot();
     const state = await createOpenClawTestState();
     const source = new AbortController();
@@ -104,22 +206,47 @@ it.each([
     });
     let pending: ReturnType<ReturnType<typeof createMessageTool>["execute"]> | undefined;
     let admission: ReturnType<typeof prepareCronPromptRunAdmission> | undefined;
+    let gatewayDispatch: ReturnType<typeof vi.fn<GatewayRequestHandler>> | undefined;
     try {
       const config: OpenClawConfig = {
         agents: { entries: { main: {} }, defaults: { workspace: state.workspaceDir } },
         tools: { allow: ["message"] },
-        channels: { discord: { token: "synthetic-token" } },
+        channels: {
+          discord:
+            revokeAt === "config"
+              ? { accounts: { admitted: { token: "admitted-token" } } }
+              : { token: "synthetic-token" },
+        },
+        ...(revokeAt === "unbound"
+          ? { gateway: { mode: "remote", remote: { url: "wss://example.invalid" } } }
+          : {}),
       };
+      let currentConfig = config;
       setRuntimeConfigSnapshot(config, config);
       const sends: string[] = [];
       const queueIds: Array<string | undefined> = [];
       const mutations: string[] = [];
+      const pins: string[] = [];
       const pollRequests: string[] = [];
+      const providerConfigs: OpenClawConfig[] = [];
+      const providerAccounts: Array<string | undefined> = [];
       const sendText = vi.fn(
-        async ({ text, deliveryQueueId, onPlatformSendDispatch }: ChannelOutboundContext) => {
+        async ({
+          cfg,
+          accountId,
+          text,
+          deliveryQueueId,
+          onPlatformSendDispatch,
+        }: ChannelOutboundContext) => {
+          providerConfigs.push(cfg);
+          providerAccounts.push(accountId ?? undefined);
           sends.push(text);
           queueIds.push(deliveryQueueId);
           if (revokeAt === "provider") {
+            boundaryEntered.resolve();
+            await releaseBoundary.promise;
+          }
+          if ((revokeAt === "pin" || revokeAt === "multipart") && sends.length === 1) {
             boundaryEntered.resolve();
             await releaseBoundary.promise;
           }
@@ -140,32 +267,86 @@ it.each([
       };
       const sendPoll = vi.fn(async ({ assertDirectAdapterHandoff }: ChannelPollContext) => {
         pollRequests.push("initial");
-        if (revokeAt === "poll-retry") {
+        if (revokeAt === "poll-provider") {
           boundaryEntered.resolve();
           await releaseBoundary.promise;
-          assertDirectAdapterHandoff?.();
+        }
+        if (revokeAt === "poll-retry" || revokeAt === "poll-partial") {
+          boundaryEntered.resolve();
+          await releaseBoundary.promise;
+          try {
+            assertDirectAdapterHandoff?.();
+          } catch (error) {
+            if (revokeAt === "poll-partial") {
+              throw createChannelPartialDeliveryError(error, {
+                channel: "discord",
+                messageId: "poll-partial",
+                pollId: "poll-partial",
+                visibleReplySent: true,
+              });
+            }
+            throw error;
+          }
           pollRequests.push("retry");
         }
         return { channel: "discord", messageId: "poll-1" };
       });
       const plugin: ChannelPlugin = {
-        ...createChannelTestPluginBase({ id: "discord" }),
+        ...createChannelTestPluginBase({
+          id: "discord",
+          ...(revokeAt === "config"
+            ? {
+                config: {
+                  listAccountIds: (candidate) =>
+                    Object.keys(candidate.channels?.discord?.accounts ?? {}),
+                  defaultAccountId: () => "admitted",
+                  resolveAccount: (candidate, accountId) =>
+                    candidate.channels?.discord?.accounts?.[accountId ?? "admitted"] ?? {},
+                },
+              }
+            : {}),
+        }),
         actions: {
           describeMessageTool: () => ({ actions: ["send", "poll", "set-presence"] }),
+          prepareSendPayload: ({ payload }) => payload,
           supportsAction: ({ action: requestedAction }) => requestedAction === "set-presence",
-          handleAction: async ({ action: requestedAction }) => {
+          resolveExecutionMode: () => deliveryMode,
+          handleAction: async ({ action: requestedAction, onPlatformSendDispatch }) => {
             if (requestedAction !== "set-presence") {
               throw new Error(`Unexpected plugin action: ${requestedAction}`);
             }
             mutations.push(requestedAction);
-            if (revokeAt === "action") {
+            if (revokeAt === "action" || revokeAt === "partial-action") {
               boundaryEntered.resolve();
               await releaseBoundary.promise;
             }
-            return { content: [{ type: "text", text: '{"ok":true}' }], details: { ok: true } };
+            if (revokeAt === "partial-action") {
+              try {
+                await onPlatformSendDispatch?.();
+              } catch (error) {
+                throw createChannelPartialDeliveryError(error, {
+                  messageId: "message-action",
+                  visibleReplySent: true,
+                });
+              }
+            }
+            return {
+              content: [{ type: "text", text: '{"ok":true}' }],
+              details: { ok: true },
+            };
           },
         },
-        outbound: { deliveryMode: "direct", sendText, sendPoll },
+        outbound: {
+          deliveryMode,
+          sendText,
+          sendPoll,
+          chunker: revokeAt === "multipart" ? (text) => text.split(" ") : undefined,
+          chunkerMode: revokeAt === "multipart" ? "text" : undefined,
+          pinDeliveredMessage: async ({ messageId, assertDirectAdapterHandoff }) => {
+            assertDirectAdapterHandoff?.();
+            pins.push(messageId);
+          },
+        },
         directory: {
           listGroupsLive: listTargetsLive,
           listPeersLive: listTargetsLive,
@@ -175,20 +356,50 @@ it.each([
         createTestRegistry([{ pluginId: plugin.id, source: "test", plugin }]),
       );
 
-      admission = prepareCronPromptRunAdmission({
-        cfg: config,
-        agentId: "main",
-        runId,
-        sessionKey,
-        jobId,
-        toolsAllow: ["message"],
-        scheduledToolPolicy,
-      });
-      bindCronJobAdmittedRun(
-        marker,
-        await admission.preparedRunAdmission.admit("embedded"),
-        source.signal,
-      );
+      let gatewayContext: GatewayRequestContext | undefined;
+      if (deliveryMode === "gateway" && revokeAt !== "unbound") {
+        const { sendHandlers } = await import("../../gateway/server-methods/send.js");
+        const method = "message.action";
+        gatewayDispatch = vi.fn(sendHandlers[method] as GatewayRequestHandler);
+        const methods = createGatewayMethodRegistry([
+          {
+            name: method,
+            owner: { kind: "core", area: "message" },
+            scope: "operator.write",
+            handler: gatewayDispatch,
+          },
+        ]);
+        gatewayContext = {
+          getRuntimeConfig: () => currentConfig,
+          getGatewayMethodRegistry: () => methods,
+          validateAgentRuntimeApprovalAuthority: createAgentRuntimeApprovalAuthorityValidator(),
+          trackExecution: <T>(run: () => Promise<T>) => run(),
+          dedupe: new Map(),
+        } as GatewayRequestContext;
+      }
+      const prepareAdmission = () =>
+        prepareCronPromptRunAdmission({
+          cfg: config,
+          agentId: "main",
+          runId,
+          sessionKey,
+          jobId,
+          toolsAllow: ["message"],
+          scheduledToolPolicy,
+        });
+      admission = gatewayContext
+        ? withPluginRuntimeGatewayContextResolver(() => gatewayContext, prepareAdmission)
+        : prepareAdmission();
+      const admitted = await admission.preparedRunAdmission.admit("embedded");
+      bindCronJobAdmittedRun(marker, admitted, source.signal);
+      const gatewayCaller = gatewayContext
+        ? createAdmittedGatewayToolCallerIdentity({
+            admittedRunContext: admitted,
+            agentId: "main",
+            sessionKey,
+            approvalSignals: [source.signal],
+          })
+        : undefined;
       const catalog: ReturnType<typeof createMessageTool>[] = [];
       const invocationPolicy = createEmbeddedMessageInvocationPolicy({
         config,
@@ -215,49 +426,72 @@ it.each([
         agentAccountId: "default",
         messageActionTurnCapability: admission.messageActionTurnCapability,
         admitScheduledInvocation: invocationPolicy.admit,
-        resolveCommandSecretRefsViaGateway: async ({ config: resolvedConfig }) => ({
-          resolvedConfig,
-          diagnostics: [],
-          targetStatesByPath: {},
-          hadUnresolvedTargets: false,
-        }),
+        resolveCommandSecretRefsViaGateway: async ({ config: resolvedConfig }) => {
+          if (revokeAt === "config") {
+            boundaryEntered.resolve();
+            await releaseBoundary.promise;
+          }
+          return {
+            resolvedConfig,
+            diagnostics: [],
+            targetStatesByPath: {},
+            hadUnresolvedTargets: false,
+          };
+        },
       });
       catalog.push(tool);
+      const invoke = <T>(run: () => T): T =>
+        gatewayCaller ? withGatewayToolCallerIdentity(gatewayCaller, run) : run();
       const send = (callId: string, message: string, gatewayUrl?: string) =>
-        tool.execute(
-          callId,
-          {
-            action: "send",
-            channel: "discord",
-            target: revokeAt === "target" ? "alerts" : "channel:100000000000000001",
-            message,
-            ...(gatewayUrl ? { gatewayUrl } : {}),
-          },
-          source.signal,
+        invoke(() =>
+          tool.execute(
+            callId,
+            {
+              action: "send",
+              channel: "discord",
+              ...(revokeAt === "config" ? { accountId: "admitted" } : {}),
+              target: revokeAt === "target" ? "alerts" : "channel:100000000000000001",
+              message: revokeAt === "multipart" ? "first second" : message,
+              ...(revokeAt === "pin"
+                ? { delivery: { pin: { enabled: true, required: true } } }
+                : {}),
+              ...(gatewayUrl ? { gatewayUrl } : {}),
+            },
+            source.signal,
+          ),
         );
       const execute = (callId: string) =>
         action === "send"
           ? send(callId, "first")
-          : tool.execute(
-              callId,
-              {
-                action,
-                channel: "discord",
-                ...(action === "poll"
-                  ? {
-                      target: "channel:100000000000000001",
-                      pollQuestion: "Ship?",
-                      pollOption: ["Yes", "No"],
-                    }
-                  : {}),
-              },
-              source.signal,
+          : invoke(() =>
+              tool.execute(
+                callId,
+                {
+                  action,
+                  channel: "discord",
+                  ...(action === "poll"
+                    ? {
+                        target: "channel:100000000000000001",
+                        pollQuestion: "Ship?",
+                        pollOption: ["Yes", "No"],
+                      }
+                    : {}),
+                },
+                source.signal,
+              ),
             );
 
       await expect(send("explicit-gateway", "blocked", "ws://127.0.0.1:18789")).rejects.toThrow(
         "Scheduled message actions cannot override Gateway routing",
       );
       expect(sendText).not.toHaveBeenCalled();
+      if (revokeAt === "unbound") {
+        await expect(execute("configured-remote")).rejects.toThrow(
+          "Scheduled message actions require an active bound Gateway",
+        );
+        expect(sendText).not.toHaveBeenCalled();
+        return;
+      }
 
       pending = execute("accepted-before-revocation");
       void pending.catch(() => undefined);
@@ -276,26 +510,77 @@ it.each([
         5000,
         "Scheduled provider boundary not reached",
       );
+      if (revokeAt === "config") {
+        currentConfig = {
+          ...config,
+          channels: { discord: { accounts: { replacement: { token: "replacement-token" } } } },
+        };
+        setRuntimeConfigSnapshot(currentConfig, currentConfig);
+        releaseBoundary.resolve();
+        await expect(pending).resolves.toMatchObject({
+          details: {
+            result: { messageId: "message-1" },
+            messageDelivery: { status: "settled", partialDelivery: false },
+          },
+        });
+        expect(providerConfigs).toEqual([config]);
+        expect(providerAccounts).toEqual(["admitted"]);
+        return;
+      }
       retire(jobId);
       releaseBoundary.resolve();
 
       if (accepted) {
         await expect(pending).resolves.toMatchObject(
-          action === "send"
-            ? { details: { result: { messageId: "message-1" } } }
-            : { details: { ok: true } },
+          partial
+            ? {
+                details: {
+                  ok: false,
+                  deliveryStatus: "partial_failed",
+                  sentBeforeError: true,
+                  result:
+                    revokeAt === "pin" || revokeAt === "multipart"
+                      ? { messageIds: ["message-1"] }
+                      : {
+                          messageId:
+                            revokeAt === "partial-action" ? "message-action" : "poll-partial",
+                        },
+                },
+              }
+            : action === "send"
+              ? {
+                  details: {
+                    result: { messageId: "message-1" },
+                    ...(deliveryMode === "gateway"
+                      ? { messageDelivery: { status: "settled", partialDelivery: false } }
+                      : {}),
+                  },
+                }
+              : action === "poll"
+                ? {
+                    details: {
+                      result: { messageId: "poll-1" },
+                      messageDelivery: { status: "settled", partialDelivery: false },
+                    },
+                  }
+                : { details: { ok: true } },
         );
       } else {
-        await expect(pending).rejects.toThrow("cron message action authority is no longer active");
+        await expect(pending).rejects.toThrow(
+          deliveryMode === "gateway"
+            ? "agent runtime authority is no longer active"
+            : "cron message action authority is no longer active",
+        );
       }
       await expect(execute("after-revocation")).rejects.toThrow(laterError);
       const sendAttempts = action === "send" && revokeAt !== "target" ? 1 : 0;
       expect(sendText).toHaveBeenCalledTimes(sendAttempts);
-      expect(sends).toEqual(sendAttempts ? ["first"] : []);
-      expect(queueIds).toEqual(sendAttempts ? [undefined] : []);
-      expect(mutations).toEqual(accepted && action === "set-presence" ? ["set-presence"] : []);
+      expect(sends).toEqual(Array.from({ length: sendAttempts }, () => "first"));
+      expect(queueIds).toEqual(Array.from({ length: sendAttempts }, () => undefined));
+      expect(mutations).toEqual(accepted && action === "set-presence" ? [action] : []);
+      expect(pins).toEqual([]);
       expect(pollRequests).toEqual(action === "poll" ? ["initial"] : []);
-      if (revokeAt === "retry") {
+      if (revokeAt === "retry" || revokeAt === "multipart") {
         expect(await loadUnfinishedDeliveries(state.stateDir)).toEqual([]);
         const replay = vi.fn();
         await recoverPendingDeliveries({

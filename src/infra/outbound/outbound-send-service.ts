@@ -11,6 +11,7 @@ import type {
   ChannelMessageActionContext,
   ChannelOutboundAdapter,
 } from "../../channels/plugins/types.public.js";
+import { isChannelPartialDeliveryError } from "../../channels/turn/delivery-result.js";
 import { appendAssistantMessageToSessionTranscript } from "../../config/sessions.js";
 import { getOwnedSessionTranscriptWriterFence } from "../../config/sessions/transcript-write-context.js";
 import {
@@ -356,55 +357,77 @@ export async function executeSendAction(params: {
             ...params.ctx,
             params: { ...params.ctx.params, message: pluginMessage },
           };
-    const pluginHandled = await tryHandleWithPluginAction({
-      ctx: pluginCtx,
-      action: "send",
-      reply: params.reply,
-      onHandled: async () => {
-        // The accepted-send commit must precede the transcript mirror below:
-        // first-contact outbound routes create their session row in it.
-        await params.ctx.onSendAccepted?.();
-        if (!params.ctx.mirror) {
-          return;
-        }
-        const materializedPresentationFallback = pluginMessage !== params.message;
-        const mirrorText = materializedPresentationFallback
-          ? pluginMessage
-          : params.ctx.mirror.text?.trim() || pluginMessage;
-        const mirrorMediaUrls =
-          params.ctx.mirror.mediaUrls ??
-          params.mediaUrls ??
-          (params.mediaUrl ? [params.mediaUrl] : undefined);
-        try {
-          const writerFence = getOwnedSessionTranscriptWriterFence({
-            sessionKey: params.ctx.mirror.sessionKey,
-          });
-          const mirrorResult = await appendAssistantMessageToSessionTranscript({
-            agentId: params.ctx.mirror.agentId,
-            sessionKey: params.ctx.mirror.sessionKey,
-            expectedSessionId: params.ctx.mirror.expectedSessionId,
-            ...(writerFence?.expectedLifecycleRevision !== undefined
-              ? { expectedLifecycleRevision: writerFence.expectedLifecycleRevision }
-              : {}),
-            ...(writerFence ? { expectedWriterRunId: writerFence.expectedWriterRunId } : {}),
-            text: mirrorText,
-            mediaUrls: mirrorMediaUrls,
-            idempotencyKey: params.ctx.mirror.idempotencyKey,
-            deliveryMirror: params.ctx.mirror.deliveryMirror,
-            config: params.ctx.cfg,
-          });
-          if (!mirrorResult.ok) {
+    let pluginHandled: PluginHandledResult | null;
+    try {
+      pluginHandled = await tryHandleWithPluginAction({
+        ctx: pluginCtx,
+        action: "send",
+        reply: params.reply,
+        onHandled: async () => {
+          // The accepted-send commit must precede the transcript mirror below:
+          // first-contact outbound routes create their session row in it.
+          try {
+            await params.ctx.onSendAccepted?.();
+          } catch (error) {
             log.warn(
-              `failed to mirror plugin-handled delivery; channel send already succeeded: ${mirrorResult.reason}`,
+              `failed to commit plugin delivery route; provider result preserved: ${formatErrorMessage(error)}`,
             );
           }
-        } catch (error) {
+          if (!params.ctx.mirror) {
+            return;
+          }
+          const materializedPresentationFallback = pluginMessage !== params.message;
+          const mirrorText = materializedPresentationFallback
+            ? pluginMessage
+            : params.ctx.mirror.text?.trim() || pluginMessage;
+          const mirrorMediaUrls =
+            params.ctx.mirror.mediaUrls ??
+            params.mediaUrls ??
+            (params.mediaUrl ? [params.mediaUrl] : undefined);
+          try {
+            const writerFence = getOwnedSessionTranscriptWriterFence({
+              sessionKey: params.ctx.mirror.sessionKey,
+            });
+            const mirrorResult = await appendAssistantMessageToSessionTranscript({
+              agentId: params.ctx.mirror.agentId,
+              sessionKey: params.ctx.mirror.sessionKey,
+              expectedSessionId: params.ctx.mirror.expectedSessionId,
+              ...(writerFence?.expectedLifecycleRevision !== undefined
+                ? { expectedLifecycleRevision: writerFence.expectedLifecycleRevision }
+                : {}),
+              ...(writerFence ? { expectedWriterRunId: writerFence.expectedWriterRunId } : {}),
+              text: mirrorText,
+              mediaUrls: mirrorMediaUrls,
+              idempotencyKey: params.ctx.mirror.idempotencyKey,
+              deliveryMirror: params.ctx.mirror.deliveryMirror,
+              config: params.ctx.cfg,
+            });
+            if (!mirrorResult.ok) {
+              log.warn(
+                `failed to mirror plugin-handled delivery; channel send already succeeded: ${mirrorResult.reason}`,
+              );
+            }
+          } catch (error) {
+            log.warn(
+              `failed to mirror plugin-handled delivery; channel send already succeeded: ${formatErrorMessage(error)}`,
+            );
+          }
+        },
+      });
+    } catch (error) {
+      if (isChannelPartialDeliveryError(error)) {
+        // A partial receipt proves the first-contact route even though it does
+        // not prove which requested content is safe to mirror as delivered.
+        try {
+          await params.ctx.onSendAccepted?.();
+        } catch (routeError) {
           log.warn(
-            `failed to mirror plugin-handled delivery; channel send already succeeded: ${formatErrorMessage(error)}`,
+            `failed to commit partial plugin delivery route; accepted receipt preserved: ${formatErrorMessage(routeError)}`,
           );
         }
-      },
-    });
+      }
+      throw error;
+    }
     if (pluginHandled) {
       return pluginHandled;
     }
@@ -481,6 +504,7 @@ export async function executePollAction(params: {
     gateway: params.ctx.gateway,
     idempotencyKey: params.ctx.idempotencyKey,
     preparedPlugin: params.ctx.channelPlugin,
+    gatewayOwnedDelivery: params.ctx.input.gatewayOwnedDelivery,
     sessionKey: params.ctx.input.sessionKey,
     inboundEventKind: params.ctx.input.inboundEventKind,
     onPlatformSendDispatch: params.ctx.input.onPlatformSendDispatch,

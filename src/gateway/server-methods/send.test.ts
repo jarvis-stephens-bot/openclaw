@@ -4356,15 +4356,37 @@ describe("gateway send mirroring", () => {
     );
     const sessionKey = "agent:main:telegram:direct:chat-partial";
 
-    const { respond } = await runMessageActionRequest({
-      channel: "telegram",
-      action: "send",
-      params: { to: "chat-partial", message: "caption text" },
-      sessionKey,
-      sessionId: "session-partial",
-      agentId: "main",
-      idempotencyKey: "idem-partial-delivery",
-    });
+    const { respond } = await runMessageActionRequest(
+      {
+        channel: "telegram",
+        action: "send",
+        params: { to: "chat-partial", message: "caption text" },
+        sessionKey,
+        sessionId: "session-partial",
+        agentId: "main",
+        idempotencyKey: "idem-partial-delivery",
+      },
+      {
+        internal: {
+          agentRuntimeIdentity: {
+            kind: "agentRuntime",
+            agentId: "main",
+            sessionKey,
+            messageActionContext: {
+              expiresAtMs: Date.now() + 60_000,
+              sessionId: "session-partial",
+              sourceReplyFinal: true,
+              sourceReplyToolCallId: "message-call-partial",
+              toolContext: {
+                currentChannelProvider: "telegram",
+                currentChannelId: "chat-partial",
+                currentSourceTurnId: "channel-user:v1:partial",
+              },
+            },
+          },
+        },
+      },
+    );
 
     const response = firstRespondCall(respond);
     expect(response[0]).toBe(false);
@@ -4377,6 +4399,10 @@ describe("gateway send mirroring", () => {
       },
     });
     expect(JSON.stringify(response[2])).toContain("caption_msg");
+    expect(mocks.beginRestartRecoveryTerminalDelivery).toHaveBeenCalledOnce();
+    expect(mocks.completeRestartRecoveryTerminalDelivery).toHaveBeenCalledOnce();
+    expect(mocks.cancelRestartRecoveryTerminalDelivery).not.toHaveBeenCalled();
+    expect(mocks.appendAssistantMessageToSessionTranscript).not.toHaveBeenCalled();
   });
 
   it("does not mark a plain unavailable failure as retryable", async () => {
@@ -4592,7 +4618,7 @@ describe("gateway send mirroring", () => {
       expect(response[1]).toMatchObject({
         channel: "twitch",
         to: testCase.expectedTarget,
-        via: "direct",
+        via: testCase.gatewayMode ? "gateway" : "direct",
         deliveryStatus: "sent",
         result: { messageId: "core-send" },
       });
@@ -4622,6 +4648,62 @@ describe("gateway send mirroring", () => {
         message: "Channel twitch does not support action send.",
       });
       expect(mocks.deliverOutboundPayloads).not.toHaveBeenCalled();
+    });
+
+    it("scopes reused idempotency keys to each message action", async () => {
+      plugin.actions = {
+        describeMessageTool: () => ({ actions: ["react"] }),
+        supportsAction: ({ action }) => action === "react",
+        handleAction: async () => jsonResult({ ok: true }),
+      };
+      plugin.outbound!.sendPoll = mocks.sendPoll;
+      mocks.dispatchChannelMessageAction.mockImplementation(async ({ action }) =>
+        action === "react" ? jsonResult({ ok: true, action }) : null,
+      );
+      const context = makeContext();
+      const idempotencyKey = "shared-action-idempotency";
+
+      const send = await runMessageActionRequest(
+        {
+          channel: "twitch",
+          action: "send",
+          params: { to: "same-room", message: "hello" },
+          idempotencyKey,
+        },
+        directCliClient(),
+        context,
+      );
+      const poll = await runMessageActionRequest(
+        {
+          channel: "twitch",
+          action: "poll",
+          params: {
+            to: "same-room",
+            pollQuestion: "Ship it?",
+            pollOption: ["Yes", "No"],
+          },
+          idempotencyKey,
+        },
+        directCliClient(),
+        context,
+      );
+      const react = await runMessageActionRequest(
+        {
+          channel: "twitch",
+          action: "react",
+          params: { to: "same-room", messageId: "m-1", emoji: "ok" },
+          idempotencyKey,
+        },
+        directCliClient(),
+        context,
+      );
+
+      expect(firstRespondCall(send.respond)[1]).toMatchObject({ deliveryStatus: "sent" });
+      expect(firstRespondCall(poll.respond)[1]).toMatchObject({ question: "Ship it?" });
+      expect(firstRespondCall(react.respond)[1]).toEqual({ ok: true, action: "react" });
+      expect(mocks.deliverOutboundPayloads).toHaveBeenCalledOnce();
+      expect(mocks.sendPoll).toHaveBeenCalledOnce();
+      expect(mocks.dispatchChannelMessageAction).toHaveBeenCalledTimes(3);
     });
 
     it.each(["dispatch", "handoff"])(

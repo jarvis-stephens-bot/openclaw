@@ -228,7 +228,18 @@ export function resolveMessageActionOutcome(
       ? resolveMessageSendOutcome(result.sendResult, action)
       : { ok: true as const };
   const payload = result.payload;
-  if (!outcome.ok || !isRecord(payload) || payload.ok !== false) {
+  if (!outcome.ok || !isRecord(payload)) {
+    return outcome;
+  }
+  if (normalizeOptionalString(payload.deliveryStatus)?.toLowerCase() === "partial_failed") {
+    return {
+      ok: false,
+      error:
+        normalizeOptionalString(payload.error) ?? `${action} ${result.action} partially failed.`,
+      sentBeforeError: true,
+    };
+  }
+  if (payload.ok !== false) {
     return outcome;
   }
   const error =
