@@ -132,6 +132,7 @@ async function handleBroadcastAction(
     result?: MessageSendResult;
   }> = [];
   const isAbortError = (err: unknown): boolean => err instanceof Error && err.name === "AbortError";
+  const parentIdempotencyKey = normalizeOptionalString(params.idempotencyKey);
   let attemptIndex = 0;
   for (const { channel: targetChannel, plugin: targetChannelPlugin } of targetChannels) {
     throwIfAborted(input.abortSignal);
@@ -169,6 +170,9 @@ async function handleBroadcastAction(
             ...params,
             channel: targetChannel,
             target: resolved.to,
+            ...(parentIdempotencyKey
+              ? { idempotencyKey: `${parentIdempotencyKey}:${receiptDiscriminator}` }
+              : {}),
           },
         });
         results.push({

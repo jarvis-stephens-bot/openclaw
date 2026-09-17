@@ -114,4 +114,40 @@ describe("broadcast send outcomes through native actions", () => {
     expect(result.payload.results[0]?.sentBeforeError).toBe(sentBeforeError);
     expect(result.payload.results[0]?.payload).toBe(payload);
   });
+
+  it("derives stable idempotency keys for each target on one provider", async () => {
+    const attempts: string[][] = [[], []];
+    let invocation = 0;
+    const plugin: ChannelPlugin = {
+      ...createChannelTestPluginBase({ id: "broadcast-test" }),
+      messaging: { targetResolver: { looksLikeId: () => true } },
+      actions: {
+        describeMessageTool: () => ({ actions: ["send"] }),
+        supportsAction: ({ action }) => action === "send",
+        handleAction: async ({ params }) => {
+          attempts[invocation]?.push(String(params.idempotencyKey));
+          return jsonResult({ ok: true, messageId: params.to });
+        },
+      },
+    };
+    setActivePluginRegistry(createTestRegistry([{ pluginId: plugin.id, plugin, source: "test" }]));
+
+    const send = async () =>
+      await runMessageAction({
+        cfg: {},
+        action: "broadcast",
+        params: {
+          channel: plugin.id,
+          targets: ["first", "second"],
+          message: "hello",
+          idempotencyKey: "broadcast-root",
+        },
+      });
+    await send();
+    invocation = 1;
+    await send();
+
+    expect(new Set(attempts[0]).size).toBe(2);
+    expect(attempts[1]).toEqual(attempts[0]);
+  });
 });
