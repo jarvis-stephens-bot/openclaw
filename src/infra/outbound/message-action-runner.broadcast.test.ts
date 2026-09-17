@@ -121,6 +121,12 @@ describe("broadcast send outcomes through native actions", () => {
     const plugin: ChannelPlugin = {
       ...createChannelTestPluginBase({ id: "broadcast-test" }),
       messaging: { targetResolver: { looksLikeId: () => true } },
+      outbound: {
+        deliveryMode: "direct",
+        sendText: async () => {
+          throw new Error("native action bypassed");
+        },
+      },
       actions: {
         describeMessageTool: () => ({ actions: ["send"] }),
         supportsAction: ({ action }) => action === "send",
