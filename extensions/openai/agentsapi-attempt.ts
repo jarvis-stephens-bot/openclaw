@@ -94,6 +94,11 @@ export async function runAgentsApiAttempt(
     }
   };
   const handle = {
+    kind: "embedded" as const,
+    toolAuthorityFingerprint: params.toolAuthorityFingerprint,
+    sourceReplyDeliveryMode: params.sourceReplyDeliveryMode,
+    taskSuggestionDeliveryMode: params.taskSuggestionDeliveryMode,
+    supportsTranscriptCommitWait: true,
     runId: params.runId,
     startedAtMs: Date.now(),
     queueMessage: async (text: string, options?: Parameters<Parameters<typeof setActiveEmbeddedRun>[1]["queueMessage"]>[1]) => {
@@ -119,6 +124,7 @@ export async function runAgentsApiAttempt(
     params.onAttemptTimeout?.(new Error("Agents API attempt timed out"));
     stop();
   }, params.timeoutMs);
+  params.replyOperation?.attachBackend(handle);
   setActiveEmbeddedRun(params.sessionId, handle, params.sessionKey, params.sessionFile, params.agentId);
   let lastAssistant: AssistantMessage | undefined;
   try {

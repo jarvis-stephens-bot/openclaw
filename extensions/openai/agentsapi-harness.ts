@@ -65,7 +65,7 @@ export function createAgentsApiHarness(runtime: PluginRuntime): AgentHarnessV2 {
       });
     },
     dispose: async () => {
-      await Promise.all([...runningSessions].map((sessionId) => abortAndDrainAgentHarnessRun({ sessionId, settleMs: 35_000 })));
+      await Promise.all([...runningSessions].map((sessionId) => abortAndDrainAgentHarnessRun({ sessionId, settleMs: 95_000 })));
       disposed = true;
     },
   };
