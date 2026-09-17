@@ -93,7 +93,7 @@ export async function runAgentsApiAttempt(
     }
     stopped = true;
     interrupted = requested;
-    params.onAttemptAbort?.();
+    if (requested) { params.onAttemptAbort?.(); }
     controller.abort(new Error("Agents API turn interrupted"));
     if (remoteSessionId && submitted) {
       const sessionId = remoteSessionId;
