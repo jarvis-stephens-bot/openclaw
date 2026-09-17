@@ -1158,9 +1158,7 @@ export const sendHandlers: GatewayRequestHandlers = {
                 skipQueue:
                   client?.internal?.agentRuntimeIdentity !== undefined &&
                   (request.action === "send" ||
-                    Boolean(trustedContext.messageActionAuthorization?.scheduled))
-                    ? true
-                    : undefined,
+                    Boolean(trustedContext.messageActionAuthorization?.scheduled)),
               };
               const settleTerminalDelivery = async (
                 deliveredPayload: unknown,
