@@ -145,7 +145,7 @@ describe("Doctor CLI migration refusal", () => {
     `,
       { runtimeRoot, timeoutMs: 60_000 },
     );
-    const result = runBuiltRuntime(
+    const result = await runBuiltRuntime(
       runtimeRoot,
       env,
       ["doctor", "--fix", "--non-interactive", "--no-workspace-suggestions"],
@@ -153,8 +153,7 @@ describe("Doctor CLI migration refusal", () => {
     );
     const output = `${result.stdout}\n${result.stderr}`;
     const text = output.replaceAll("│", " ").replace(/\s+/g, " ");
-    expect(result.error, output).toBeUndefined();
-    expect(result.status, output).toBe(1);
+    expect(result.code, output).toBe(1);
     expect(output).toContain(databasePath);
     expect(output).toContain(workspaceDir);
     expect(text).toContain("unsupported workspace setup version 99");
@@ -204,7 +203,7 @@ describe("Doctor CLI migration refusal", () => {
       fs.writeFileSync(tuiPath, tuiRaw);
       fs.writeFileSync(approvalsPath, approvalsRaw);
       const runtimeRoot = createBuiltRuntime(root);
-      const result = runBuiltRuntime(
+      const result = await runBuiltRuntime(
         runtimeRoot,
         {
           PATH: process.env.PATH,
@@ -220,7 +219,6 @@ describe("Doctor CLI migration refusal", () => {
         60_000,
       );
       const output = `${result.stdout}\n${result.stderr}`;
-      expect(result.error, output).toBeUndefined();
       expect(result.signal, output).toBeNull();
       const db = new DatabaseSync(path.join(stateDir, "state", "openclaw.sqlite"), {
         readOnly: true,
@@ -230,7 +228,7 @@ describe("Doctor CLI migration refusal", () => {
           .prepare("SELECT raw_json FROM exec_approvals_config WHERE config_key = 'current'")
           .all();
         if (validTui) {
-          expect(result.status, output).toBe(0);
+          expect(result.code, output).toBe(0);
           expect(output).toContain("Doctor complete.");
           expect(output.indexOf("TUI last-session pointer(s)")).toBeGreaterThanOrEqual(0);
           expect(output.indexOf("Imported legacy exec approvals")).toBeGreaterThan(
@@ -244,7 +242,7 @@ describe("Doctor CLI migration refusal", () => {
           expect(fs.readFileSync(approvalsPath, "utf8")).toBe(approvalsRaw);
           expect(fs.readFileSync(tuiPath, "utf8")).toBe(tuiRaw);
           expect(approvals).toEqual([]);
-          expect(result.status, output).toBe(1);
+          expect(result.code, output).toBe(1);
           expect(output).toContain("Failed reading legacy TUI last-session state");
           expect(output).not.toContain("Imported legacy exec approvals");
           expect(output).not.toContain("Doctor complete.");
@@ -259,7 +257,7 @@ describe("Doctor CLI migration refusal", () => {
 });
 
 describe("Doctor CLI config recovery", () => {
-  it("repairs retired and unknown keys and migrates legacy state with the system agent in one run", () => {
+  it("repairs retired and unknown keys and migrates legacy state with the system agent in one run", async () => {
     const root = fs.realpathSync(tempDirs.make("openclaw-doctor-config-state-"));
     const stateDir = path.join(root, "state");
     const workspaceDir = path.join(root, "workspace");
@@ -293,7 +291,7 @@ describe("Doctor CLI config recovery", () => {
     );
     fs.writeFileSync(path.join(sessionsDir, "legacy-session.jsonl"), "{}\n");
     const runtimeRoot = createBuiltRuntime(root);
-    const result = runBuiltRuntime(
+    const result = await runBuiltRuntime(
       runtimeRoot,
       {
         PATH: process.env.PATH,
@@ -310,8 +308,7 @@ describe("Doctor CLI config recovery", () => {
       60_000,
     );
     const output = `${result.stdout}\n${result.stderr}`;
-    expect(result.error, output).toBeUndefined();
-    expect(result.status, output).toBe(0);
+    expect(result.code, output).toBe(0);
     expect(output).toContain("Doctor complete.");
     const repaired = JSON.parse(fs.readFileSync(configPath, "utf8"));
     expect(repaired.browser).not.toHaveProperty("relayBindHost");

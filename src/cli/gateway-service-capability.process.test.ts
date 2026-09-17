@@ -85,28 +85,38 @@ function snapshotState(stateDir: string) {
 }
 
 describe("candidate service capability startup", () => {
-  it("answers capability and version probes without state writes or locks while a Gateway owns an older schema", () => {
+  it("answers capability and version probes without state writes or locks while a Gateway owns an older schema", async () => {
     const fixture = createFixture();
     const gateway = acquireGatewayLifecycleCoordinator({ databasePath: fixture.databasePath });
     const before = snapshotState(fixture.stateDir);
     try {
-      const result = fixture.run(["gateway", "install", "--update-executor", "check", "--json"]);
-      expect(result.error).toBeUndefined();
-      expect(result.status, `${result.stderr}\n${result.stdout}`).toBe(0);
+      const result = await fixture.run([
+        "gateway",
+        "install",
+        "--update-executor",
+        "check",
+        "--json",
+      ]);
+      expect(result.code, `${result.stderr}\n${result.stdout}`).toBe(0);
       expect(JSON.parse(result.stdout)).toEqual({
         updateExecutor: "root-spawner-v1",
         targetRootBinding: true,
       });
       const state = acquireStateDatabaseCoordinator({ databasePath: fixture.databasePath });
       try {
-        const locked = fixture.run(["gateway", "install", "--update-executor=check", "--json"]);
-        expect(locked.status, locked.stderr).toBe(0);
+        const locked = await fixture.run([
+          "gateway",
+          "install",
+          "--update-executor=check",
+          "--json",
+        ]);
+        expect(locked.code, locked.stderr).toBe(0);
         expect(JSON.parse(locked.stdout)).toEqual(JSON.parse(result.stdout));
       } finally {
         state.release();
       }
-      const version = fixture.run(["--version"]);
-      expect(version.status, version.stderr).toBe(0);
+      const version = await fixture.run(["--version"]);
+      expect(version.code, version.stderr).toBe(0);
       expect(version.stdout).toMatch(/^OpenClaw /u);
       expect(snapshotState(fixture.stateDir)).toEqual(before);
       const database = new DatabaseSync(fixture.databasePath, { readOnly: true });
@@ -122,14 +132,13 @@ describe("candidate service capability startup", () => {
     }
   });
 
-  it("keeps ordinary service commands behind the live Gateway schema fence", () => {
+  it("keeps ordinary service commands behind the live Gateway schema fence", async () => {
     const fixture = createFixture();
     const gateway = acquireGatewayLifecycleCoordinator({ databasePath: fixture.databasePath });
     const before = fs.readFileSync(fixture.databasePath);
     try {
-      const result = fixture.run(["gateway", "install", "--json"]);
-      expect(result.error).toBeUndefined();
-      expect(result.status).toBe(1);
+      const result = await fixture.run(["gateway", "install", "--json"]);
+      expect(result.code).toBe(1);
       expect(`${result.stderr}\n${result.stdout}`).toContain(
         "because another Gateway owns that state directory",
       );

@@ -93,7 +93,7 @@ function runDoctor(params: {
 }
 
 describe("Doctor report process output", () => {
-  it("refuses an unfenced schema bump without publication metadata before CLI debug capture can write state", () => {
+  it("refuses an unfenced schema bump without publication metadata before CLI debug capture can write state", async () => {
     const root = tempDirs.make("openclaw-doctor-update-schema-");
     const configPath = path.join(root, "openclaw.json");
     const env = { OPENCLAW_STATE_DIR: path.join(root, "state"), OPENCLAW_CONFIG_PATH: configPath };
@@ -110,7 +110,7 @@ describe("Doctor report process output", () => {
     const sidecarsBefore = ["-wal", "-shm"].map((suffix) => fs.existsSync(`${shared}${suffix}`));
     const configBefore = fs.readFileSync(configPath);
 
-    const result = runDoctor({
+    const result = await runDoctor({
       root,
       configPath,
       repair: true,
@@ -120,7 +120,6 @@ describe("Doctor report process output", () => {
         OPENCLAW_SERVICE_REPAIR_POLICY: "external",
       },
     });
-    expect(result.error).toBeUndefined();
     expect(
       ["-wal", "-shm"].map((suffix) => fs.existsSync(`${shared}${suffix}`)),
       result.stderr,
@@ -135,13 +134,13 @@ describe("Doctor report process output", () => {
       after.close();
     }
     expect(fs.readFileSync(configPath)).toEqual(configBefore);
-    expect(result.status, `${result.stderr}\n${result.stdout}`).toBe(1);
+    expect(result.code, `${result.stderr}\n${result.stdout}`).toBe(1);
     expect(`${result.stderr}\n${result.stdout}`).toContain(
       "Doctor refused update-time schema repair driven by OpenClaw 2026.9.2",
     );
   });
 
-  it("reports deferred Doctor-only state after config refusal, then converges", () => {
+  it("reports deferred Doctor-only state after config refusal, then converges", async () => {
     const root = tempDirs.make("openclaw-doctor-deferred-state-");
     const stateDir = path.join(root, "state");
     const workspaceDir = path.join(root, "workspace");
@@ -182,12 +181,11 @@ describe("Doctor report process output", () => {
     const tuiBefore = fs.readFileSync(tuiSource);
     const agentBefore = fs.readFileSync(agentSource);
 
-    const refused = runDoctor({ root, configPath, repair: true });
+    const refused = await runDoctor({ root, configPath, repair: true });
     const refusedOutput = `${refused.stderr}\n${refused.stdout}`;
 
-    expect(refused.error, refusedOutput).toBeUndefined();
     expect(refused.signal, refusedOutput).toBeNull();
-    expect(refused.status, refusedOutput).toBe(1);
+    expect(refused.code, refusedOutput).toBe(1);
     expect(refusedOutput.match(/Legacy state deferred/g) ?? [], refusedOutput).toHaveLength(1);
     expect(refusedOutput).toContain("Workspace setup and attestations");
     expect(refusedOutput).toContain("TUI last-session pointers");
@@ -220,11 +218,10 @@ describe("Doctor report process output", () => {
         2,
       )}\n`,
     );
-    const repaired = runDoctor({ root, configPath, repair: true });
+    const repaired = await runDoctor({ root, configPath, repair: true });
     const repairedOutput = `${repaired.stderr}\n${repaired.stdout}`;
-    expect(repaired.error, repairedOutput).toBeUndefined();
     expect(repaired.signal, repairedOutput).toBeNull();
-    expect(repaired.status, repairedOutput).toBe(0);
+    expect(repaired.code, repairedOutput).toBe(0);
     expect(fs.existsSync(workspaceSource)).toBe(false);
     expect(fs.existsSync(tuiSource)).toBe(false);
     expect(fs.existsSync(agentSource)).toBe(false);
@@ -233,16 +230,15 @@ describe("Doctor report process output", () => {
     );
     expect(JSON.parse(fs.readFileSync(configPath, "utf8"))).not.toHaveProperty("gatway");
 
-    const clean = runDoctor({ root, configPath, repair: true });
+    const clean = await runDoctor({ root, configPath, repair: true });
     const cleanOutput = `${clean.stderr}\n${clean.stdout}`;
-    expect(clean.error, cleanOutput).toBeUndefined();
     expect(clean.signal, cleanOutput).toBeNull();
-    expect(clean.status, cleanOutput).toBe(0);
+    expect(clean.code, cleanOutput).toBe(0);
     expect(cleanOutput).not.toContain("Legacy state deferred");
     expect(cleanOutput).not.toContain("Legacy state detected");
   }, 180_000);
 
-  it("fails repair when session import leaves a startup-blocking legacy store", () => {
+  it("fails repair when session import leaves a startup-blocking legacy store", async () => {
     const root = tempDirs.make("openclaw-doctor-session-convergence-");
     const stateDir = path.join(root, "state");
     const configPath = path.join(root, "openclaw.json");
@@ -252,12 +248,11 @@ describe("Doctor report process output", () => {
     fs.writeFileSync(configPath, `${JSON.stringify({ heartbeat: { every: "30m" } })}\n`);
     fs.writeFileSync(storePath, original);
 
-    const result = runDoctor({ root, configPath, repair: true });
+    const result = await runDoctor({ root, configPath, repair: true });
     const output = `${result.stderr}\n${result.stdout}`;
 
-    expect(result.error, output).toBeUndefined();
     expect(result.signal, output).toBeNull();
-    expect(result.status, output).toBe(1);
+    expect(result.code, output).toBe(1);
     expect(output).toContain("Legacy session store requires migration");
     expect(output).toContain("openclaw doctor --fix");
     expect(output).not.toContain("Doctor complete.");
@@ -268,7 +263,7 @@ describe("Doctor report process output", () => {
     expect(JSON.parse(fs.readFileSync(configPath, "utf8"))).not.toHaveProperty("heartbeat");
   }, 120_000);
 
-  it("explains and preserves retained custom agent databases in preview and repair", () => {
+  it("explains and preserves retained custom agent databases in preview and repair", async () => {
     for (const repair of [false, true]) {
       const root = tempDirs.make(
         `openclaw-doctor-retained-database-${repair ? "repair" : "preview"}-`,
@@ -319,11 +314,10 @@ describe("Doctor report process output", () => {
       closeOpenClawAgentDatabasesForTest();
       closeOpenClawStateDatabaseForTest();
 
-      const result = runDoctor({ root, configPath, repair });
+      const result = await runDoctor({ root, configPath, repair });
       const output = `${result.stderr}\n${result.stdout}`;
-      expect(result.error, output).toBeUndefined();
       expect(result.signal, output).toBeNull();
-      expect(result.status, output).toBe(0);
+      expect(result.code, output).toBe(0);
       expect(output).toContain('Retained unconfigured agent database "retired" at');
       expect(output).toContain(retainedDatabase.path);
       expect(output).toContain("Doctor will not remove it automatically because it may contain");

@@ -108,7 +108,7 @@ function seedOwnerlessSchemaOnlyAgentDatabase(stateDir: string): string {
 }
 
 describe("doctor invalid config process exit", () => {
-  it("repairs the v17 additive schema through doctor --fix", () => {
+  it("repairs the v17 additive schema through doctor --fix", async () => {
     const root = fs.realpathSync(tempDirs.make("openclaw-doctor-v17-additive-"));
     const stateDir = path.join(root, "state");
     const configPath = path.join(stateDir, "openclaw.json");
@@ -126,9 +126,8 @@ describe("doctor invalid config process exit", () => {
     };
     const args = ["doctor", "--fix", "--non-interactive", "--yes", "--no-workspace-suggestions"];
 
-    const first = runBuiltRuntime(runtimeRoot, env, args, 60_000);
-    expect(first.error, first.stderr).toBeUndefined();
-    expect(first.status, first.stderr).toBe(0);
+    const first = await runBuiltRuntime(runtimeRoot, env, args, 60_000);
+    expect(first.code, first.stderr).toBe(0);
     expect(`${first.stdout}\n${first.stderr}`).toContain(
       `v17 -> v${OPENCLAW_AGENT_SCHEMA_VERSION}`,
     );
@@ -163,20 +162,19 @@ describe("doctor invalid config process exit", () => {
       repaired.close();
     }
 
-    const second = runBuiltRuntime(runtimeRoot, env, args, 60_000);
-    expect(second.error, second.stderr).toBeUndefined();
-    expect(second.status, second.stderr).toBe(0);
+    const second = await runBuiltRuntime(runtimeRoot, env, args, 60_000);
+    expect(second.code, second.stderr).toBe(0);
     expect(`${second.stdout}\n${second.stderr}`).not.toMatch(
       /Skipped agent database migration|Upgraded agent database schema/u,
     );
   });
 
-  it("keeps Doctor UI checks inside the source runtime fixture", () => {
+  it("keeps Doctor UI checks inside the source runtime fixture", async () => {
     const root = fs.realpathSync(tempDirs.make("openclaw-doctor-runtime-owner-"));
     const runtimeRoot = createSourceRuntime(root);
     const uiIndexPath = path.join(runtimeRoot, "dist", "control-ui", "index.html");
     fs.writeFileSync(uiIndexPath, '<script src="./assets/missing-fixture.js"></script>\n');
-    const result = runSourceRuntime(
+    const result = await runSourceRuntime(
       runtimeRoot,
       {
         ...process.env,
@@ -192,8 +190,7 @@ describe("doctor invalid config process exit", () => {
       ],
       30_000,
     );
-    expect(result.error, result.stderr).toBeUndefined();
-    expect(result.status, result.stderr).toBe(0);
+    expect(result.code, result.stderr).toBe(0);
     expect(JSON.parse(result.stdout)).toEqual([
       { kind: "missing-assets", root: runtimeRoot, uiIndexPath, canBuild: false },
     ]);
@@ -275,7 +272,7 @@ describe("doctor invalid config process exit", () => {
       }),
     );
     const runtimeRoot = createBuiltRuntime(root);
-    const result = runBuiltRuntime(
+    const result = await runBuiltRuntime(
       runtimeRoot,
       env,
       ["doctor", "--repair", "--non-interactive", "--no-workspace-suggestions"],
@@ -283,8 +280,7 @@ describe("doctor invalid config process exit", () => {
     );
     const output = `${result.stderr}\n${result.stdout}`;
 
-    expect(result.error, output).toBeUndefined();
-    expect(result.status, output).toBe(0);
+    expect(result.code, output).toBe(0);
     expect(result.signal, output).toBeNull();
     expect(output).toContain("Imported legacy exec approvals into shared SQLite state.");
     expect(output).toContain("Exec approvals updated: removed 1 older generated approval");
@@ -323,7 +319,7 @@ describe("doctor invalid config process exit", () => {
     }
   }, 45_000);
 
-  it("exits after a complete best-effort report for an unparseable config", () => {
+  it("exits after a complete best-effort report for an unparseable config", async () => {
     const root = fs.realpathSync(tempDirs.make("openclaw-doctor-invalid-config-exit-"));
     const stateDir = path.join(root, "state");
     const configPath = path.join(stateDir, "openclaw.json");
@@ -353,7 +349,7 @@ describe("doctor invalid config process exit", () => {
     fs.writeFileSync(configPath, '{"agents": {broken json');
 
     const runtimeRoot = createBuiltRuntime(root);
-    const result = runBuiltRuntime(
+    const result = await runBuiltRuntime(
       runtimeRoot,
       env,
       ["doctor", "--non-interactive", "--no-workspace-suggestions"],
@@ -361,8 +357,7 @@ describe("doctor invalid config process exit", () => {
     );
     const output = `${result.stderr}\n${result.stdout}`;
 
-    expect(result.error, output).toBeUndefined();
-    expect(result.status, output).toBe(0);
+    expect(result.code, output).toBe(0);
     expect(result.signal, output).toBeNull();
     expect(output).toContain("Config invalid; doctor will run with best-effort config.");
     expect(output).toContain("Doctor complete.");
@@ -873,7 +868,7 @@ describe("gateway startup-migration refusal", () => {
       );
       const runtimeRoot = createBuiltRuntime(root);
 
-      const result = runBuiltRuntime(
+      const result = await runBuiltRuntime(
         runtimeRoot,
         env,
         ["gateway", "run", "--port", "18720", "--allow-unconfigured"],
@@ -881,14 +876,13 @@ describe("gateway startup-migration refusal", () => {
       );
       const output = `${result.stderr}\n${result.stdout}`;
 
-      expect(result.error, output).toBeUndefined();
       // The refused startup must be side-effect-free: the pending legacy
       // relocation stayed untouched for the live owner.
       expect(fs.existsSync(legacyArtifactPath), output).toBe(true);
       expect(fs.existsSync(path.join(stateDir, "agents", "main", "agent")), output).toBe(false);
       // No orphan-sidecar quarantine copy either: write admission never ran.
       expect(fs.readdirSync(sharedStateDbDir), output).toEqual(["openclaw.sqlite-wal"]);
-      expect(result.status, output).toBe(78);
+      expect(result.code, output).toBe(78);
       expect(result.stderr, output).toContain("already owns this state directory");
       expect(hasActiveStartupMigrationLease({ env })).toBe(false);
     } finally {

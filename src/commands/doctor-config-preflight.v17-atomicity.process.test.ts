@@ -13,7 +13,7 @@ import {
 const tempDirs = useAutoCleanupTempDirTracker(afterAll);
 
 describe("doctor schema-17 repair atomicity", () => {
-  it("rolls back rejected v17 repair through doctor --fix", () => {
+  it("rolls back rejected v17 repair through doctor --fix", async () => {
     const root = fs.realpathSync(tempDirs.make("openclaw-doctor-v17-atomicity-"));
     const stateDir = path.join(root, "state");
     const configPath = path.join(stateDir, "openclaw.json");
@@ -23,7 +23,7 @@ describe("doctor schema-17 repair atomicity", () => {
       participantDependency: true,
     });
     const runtimeRoot = createBuiltRuntime(root);
-    const result = runBuiltRuntime(
+    const result = await runBuiltRuntime(
       runtimeRoot,
       {
         ...process.env,
@@ -38,7 +38,6 @@ describe("doctor schema-17 repair atomicity", () => {
     );
     const output = `${result.stdout}\n${result.stderr}`;
 
-    expect(result.error, output).toBeUndefined();
     expect(output).toContain("Skipped agent database migration");
     expect(output).toContain("Participant migration cannot rebuild unknown indexes");
 

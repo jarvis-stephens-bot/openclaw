@@ -79,10 +79,9 @@ describe("Doctor retired plugin install config", () => {
       expect(fs.existsSync(`${configPath}.last-good`)).toBe(false);
 
       for (const pass of ["repair", "repeat"]) {
-        const result = runBuiltRuntime(runtimeRoot, env, doctorArgs, 60_000);
+        const result = await runBuiltRuntime(runtimeRoot, env, doctorArgs, 60_000);
         const output = `${pass}: ${result.stdout}\n${result.stderr}`;
-        expect(result.error, output).toBeUndefined();
-        expect(result.status, output).toBe(0);
+        expect(result.code, output).toBe(0);
         const repaired = JSON.parse(fs.readFileSync(configPath, "utf8")) as OpenClawConfig;
         expect(repaired.plugins, output).not.toHaveProperty("installs");
         if (included) {
@@ -96,8 +95,8 @@ describe("Doctor retired plugin install config", () => {
         expect(readPersistedInstalledPluginIndexInstallRecords({ stateDir, env })).toEqual(
           empty ? { existing: durable } : { existing: durable, imported: legacy },
         );
-        const validation = runBuiltRuntime(runtimeRoot, env, ["config", "validate"], 30_000);
-        expect(validation.status, `${validation.stdout}\n${validation.stderr}`).toBe(0);
+        const validation = await runBuiltRuntime(runtimeRoot, env, ["config", "validate"], 30_000);
+        expect(validation.code, `${validation.stdout}\n${validation.stderr}`).toBe(0);
       }
     },
     120_000,
@@ -152,7 +151,7 @@ describe("Doctor retired plugin install config", () => {
       plugins: { ...config.plugins, installs: { broken: { source: "invalid" } } },
     });
     fs.writeFileSync(configPath, raw);
-    const result = runBuiltRuntime(runtimeRoot, env, doctorArgs, 60_000);
+    const result = await runBuiltRuntime(runtimeRoot, env, doctorArgs, 60_000);
     expect(`${result.stdout}\n${result.stderr}`).toContain(
       "plugins.installs contains invalid records",
     );
@@ -256,7 +255,7 @@ describe("Doctor retired plugin install config", () => {
       const original = fs.readFileSync(configPath, "utf8");
       const result =
         mode === "doctor"
-          ? runBuiltRuntime(runtimeRoot, env, doctorArgs, 60_000)
+          ? await runBuiltRuntime(runtimeRoot, env, doctorArgs, 60_000)
           : await runIsolatedModuleScript(
               env,
               `
@@ -278,8 +277,8 @@ describe("Doctor retired plugin install config", () => {
               { timeoutMs: 60_000 },
             );
       const output = `${result.stdout}\n${result.stderr}`;
-      if ("status" in result) {
-        expect(result.status, output).toBe(0);
+      if ("code" in result) {
+        expect(result.code, output).toBe(0);
       }
       clearLoadInstalledPluginIndexInstallRecordsCache();
       if (invalid) {

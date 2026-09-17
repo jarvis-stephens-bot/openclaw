@@ -147,7 +147,7 @@ describe("startup admission before persistent writes", () => {
     },
   ])(
     "admits or preserves shipped state for $name",
-    ({
+    async ({
       workspace,
       repairable,
       config,
@@ -287,7 +287,7 @@ describe("startup admission before persistent writes", () => {
           throw new Error("Discarded clobbered config environment leaked through admission.");
         }
       `;
-        const result = runSourceRuntime(
+        const result = await runSourceRuntime(
           runtimeRoot,
           {
             PATH: process.env.PATH,
@@ -316,8 +316,7 @@ describe("startup admission before persistent writes", () => {
           60_000,
         );
         const output = `${result.stdout}\n${result.stderr}`;
-        expect(result.error, output).toBeUndefined();
-        expect(result.status, output).toBe(restored || unavailablePlugin ? 0 : 78);
+        expect(result.code, output).toBe(restored || unavailablePlugin ? 0 : 78);
         expect(output).toContain(reason);
         if (restored) {
           expect(fs.readFileSync(configPath, "utf8")).toBe(
