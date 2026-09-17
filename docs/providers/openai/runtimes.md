@@ -59,6 +59,27 @@ selection, including `openai/gpt-5.5`, unless you explicitly use
 only when you want API-key auth for an agent model.
 </Note>
 
+## Agents API MVP
+
+The bundled OpenAI plugin also registers the explicit `agentsapi` harness.
+Set `agents.defaults.models["openai/gpt-6-astra"].agentRuntime.id` to
+`"agentsapi"` and use OpenAI API-key authentication. This experimental MVP fixes
+the model to `gpt-6-astra`, reasoning to `low`, and the environment to an
+OpenAI-hosted Linux VM. It does not change automatic runtime selection.
+
+Agents API owns the persistent agent session and workspace. OpenClaw stores
+the session binding in plugin SQLite state and mirrors text replies into its
+normal transcript. Follow-up messages reuse the agent session; input during
+a running turn steers it, and interruption cancels its remote turn. `/new`
+and `/reset` start a fresh session on the next message. Reset and local session
+deletion retire the binding; the Agents API retains the remote history and
+workspace, which can be managed through its API.
+
+This MVP supports text and native hosted-workspace commands. Apps, connectors,
+OpenClaw dynamic tools, file transfer, image generation, custom context engines,
+and self-hosted executors are outside its scope. It does not automatically
+replay uncertain turns because hosted commands may already have run.
+
 ## Native Codex app-server auth
 
 The native Codex app-server harness uses `openai/*` model refs when an eligible

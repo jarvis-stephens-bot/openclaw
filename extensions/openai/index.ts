@@ -3,6 +3,7 @@ import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { resolvePluginConfigObject } from "openclaw/plugin-sdk/plugin-config-runtime";
 import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
 import { buildProviderToolCompatFamilyHooks } from "openclaw/plugin-sdk/provider-tools";
+import { createAgentsApiHarness } from "./agentsapi-harness.js";
 import { buildOpenAIImageGenerationProvider } from "./image-generation-provider.js";
 import { openaiMediaUnderstandingProvider } from "./media-understanding-provider.js";
 import { openAiMemoryEmbeddingProviderAdapter } from "./memory-embedding-adapter.js";
@@ -26,6 +27,7 @@ export default definePluginEntry({
   name: "OpenAI Provider",
   description: "Bundled OpenAI provider plugins",
   register(api) {
+    api.registerAgentHarness(createAgentsApiHarness(api.runtime));
     const { ensureAuthProfileStore, listProfilesForProvider, isProviderApiKeyConfigured } =
       api.runtime.modelAuth;
     const openAIToolCompatHooks = buildProviderToolCompatFamilyHooks("openai");
