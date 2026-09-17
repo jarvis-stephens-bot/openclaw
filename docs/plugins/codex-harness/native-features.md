@@ -127,7 +127,7 @@ daemon must resolve the same Codex home. For a custom socket, set
 the running server; it does not start or stop that daemon.
 
 To let native Codex select the model and provider, open a stored or idle session
-from the **Codex** sidebar and choose **Continue as branch**. The resulting
+from the **Codex** sidebar and send a message from its session viewer. The resulting
 model-locked Chat uses native configuration for its initial selection and
 preserves native ownership on later turns. Check `/codex binding` in that Chat
 to inspect the actual selection. Ordinary OpenClaw chats still use their
@@ -144,8 +144,9 @@ then reconnect and retry. Other threads and the daemon can stay running.
 Existing supervised conversations keep their recorded native search policy
 after an update. If native search was disabled when the conversation was
 created, newly advertised provider support does not enable it in that thread.
-Use **Continue as branch** to create a new conversation with the current native
-search capability and OpenClaw tool policy.
+Open another stored or idle native session from the **Codex** sidebar and send
+a message to create a new branch with the current native search capability and
+OpenClaw tool policy.
 
 ## Supervise Codex sessions
 

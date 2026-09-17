@@ -21,6 +21,7 @@ import {
   mergeCodexThreadConfigs,
   type CodexPluginThreadConfig,
 } from "./plugin-thread-config.js";
+import { CodexThreadDirectInputError } from "./protocol-validators.js";
 import type { CodexThread } from "./protocol.js";
 import type { CodexAppServerThreadBinding } from "./session-binding.js";
 import {
@@ -251,7 +252,10 @@ export async function tryReuseCodexLiveThread(
           assertWarmOwner,
         );
       } catch (error) {
-        if (error instanceof CodexAdoptedThreadActiveError) {
+        if (
+          error instanceof CodexAdoptedThreadActiveError ||
+          error instanceof CodexThreadDirectInputError
+        ) {
           assertWarmOwner();
           // Passive refusal must leave the verified configuration owner available for retry.
           preserveSubscription = true;

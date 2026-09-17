@@ -22,6 +22,7 @@ import { readStringValue } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { createRequireRecord } from "openclaw/plugin-sdk/test-fixtures";
 import { describe, expect, it, vi } from "vitest";
 import { readAttemptTerminal } from "./attempt-terminal.test-helper.js";
+import { hasCodexAppServerLiveThread } from "./client-runtime.js";
 import { shouldEnableCodexAppServerNativeToolSurface } from "./dynamic-tool-build.js";
 import {
   assistantMessage,
@@ -1801,6 +1802,7 @@ describe("runCodexAppServerAttempt context-engine lifecycle", () => {
   it.each([false, true])(
     "preserves native ownership through terminal overflow (expected native: %s)",
     async (nativeOwned) => {
+      const overflowMessage = "Codex ran out of room in the model's context window";
       const sessionFile = path.join(tempDir, "session.jsonl");
       const workspaceDir = path.join(tempDir, "workspace");
       openFileBackedSessionManagerForTest(sessionFile, { sessionId: "session-1" }).appendMessage(
@@ -1877,16 +1879,12 @@ describe("runCodexAppServerAttempt context-engine lifecycle", () => {
           turn: {
             id: "turn-old",
             status: "failed",
-            error: { message: "Codex ran out of room in the model's context window" },
+            error: { message: overflowMessage },
             items: [],
           },
         },
       });
-      const result = await run;
-
-      expect(readAttemptTerminal(result).promptError).toBe(
-        "Codex ran out of room in the model's context window",
-      );
+      expect(readAttemptTerminal(await run).promptError).toBe(overflowMessage);
       expect(compact).not.toHaveBeenCalled();
       expect(harness.requests.map((request) => request.method)).toEqual([
         "config/read",
@@ -1895,8 +1893,9 @@ describe("runCodexAppServerAttempt context-engine lifecycle", () => {
         "thread/resume",
         "thread/inject_items",
         "turn/start",
-        "thread/unsubscribe",
+        ...(nativeOwned ? [] : ["thread/unsubscribe"]),
       ]);
+      expect(hasCodexAppServerLiveThread(harness.client, "thread-old")).toBe(nativeOwned);
       const savedBinding = await readCodexAppServerBinding(sessionFile);
       if (nativeOwned) {
         expect(savedBinding).toMatchObject({ threadId: "thread-old", preserveNativeModel: true });
