@@ -1075,6 +1075,47 @@ describe("executeSendAction", () => {
     expect(mocks.sendMessage).not.toHaveBeenCalled();
   });
 
+  it("commits a returned partial plugin send without mirroring unproven content", async () => {
+    const onSendAccepted = vi.fn(async () => {});
+    mocks.dispatchChannelMessageAction.mockResolvedValueOnce({
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify({
+            deliveryStatus: "partial_failed",
+            sentBeforeError: true,
+            error: "second part failed",
+            messageId: "msg-plugin",
+          }),
+        },
+      ],
+      details: {
+        deliveryStatus: "partial_failed",
+        sentBeforeError: true,
+        error: "second part failed",
+        messageId: "msg-plugin",
+      },
+    });
+
+    const result = await executeSendAction({
+      ctx: createContext({
+        params: { to: "channel:123", message: "accepted then unsent" },
+        onSendAccepted,
+        mirror: { sessionKey: "agent:main:demo-outbound:channel:123" },
+      }),
+      to: "channel:123",
+      message: "accepted then unsent",
+    });
+
+    expect(result).toMatchObject({
+      handledBy: "plugin",
+      payload: { deliveryStatus: "partial_failed", sentBeforeError: true },
+    });
+    expect(onSendAccepted).toHaveBeenCalledOnce();
+    expect(mocks.appendAssistantMessageToSessionTranscript).not.toHaveBeenCalled();
+    expect(mocks.sendMessage).not.toHaveBeenCalled();
+  });
+
   it("skips plugin dispatch during dry-run sends and forwards gateway + silent to sendMessage", async () => {
     mocks.sendMessage.mockResolvedValue({
       channel: "demo-outbound",

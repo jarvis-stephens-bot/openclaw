@@ -170,7 +170,7 @@ async function tryHandleWithPluginAction(params: {
   ctx: OutboundSendContext;
   action: "send" | "poll";
   reply?: OutboundReplyFacts;
-  onHandled?: () => Promise<void> | void;
+  onHandled?: (outcome: { partialDelivery: boolean }) => Promise<void> | void;
 }): Promise<PluginHandledResult | null> {
   if (params.ctx.dryRun) {
     return null;
@@ -206,8 +206,9 @@ async function tryHandleWithPluginAction(params: {
   if (!handled) {
     return null;
   }
-  if (projectPluginMessageDeliveryFact(handled)?.status !== "suppressed") {
-    await params.onHandled?.();
+  const deliveryFact = projectPluginMessageDeliveryFact(handled);
+  if (deliveryFact?.status !== "suppressed") {
+    await params.onHandled?.({ partialDelivery: deliveryFact?.partialDelivery === true });
   }
   return {
     handledBy: "plugin",
@@ -363,7 +364,7 @@ export async function executeSendAction(params: {
         ctx: pluginCtx,
         action: "send",
         reply: params.reply,
-        onHandled: async () => {
+        onHandled: async ({ partialDelivery }) => {
           // The accepted-send commit must precede the transcript mirror below:
           // first-contact outbound routes create their session row in it.
           try {
@@ -373,7 +374,7 @@ export async function executeSendAction(params: {
               `failed to commit plugin delivery route; provider result preserved: ${formatErrorMessage(error)}`,
             );
           }
-          if (!params.ctx.mirror) {
+          if (partialDelivery || !params.ctx.mirror) {
             return;
           }
           const materializedPresentationFallback = pluginMessage !== params.message;
