@@ -369,6 +369,21 @@ describe("Scheduled Task stop/restart cleanup", () => {
     },
   );
 
+  it("keeps terminating the same Scheduled Task owner after its process stops reporting live", async () => {
+    await withPreparedGatewayTask(async ({ env }) => {
+      vi.spyOn(process, "platform", "get").mockReturnValue("win32");
+      readGatewayOwnerLease
+        .mockReturnValueOnce(GATEWAY_OWNER)
+        .mockReturnValue({ ...GATEWAY_OWNER, state: "unknown" });
+      mockWindowsTaskkillSuccess();
+
+      await expect(terminateScheduledTaskGatewayListeners(env)).resolves.toEqual([4242]);
+
+      expect(taskkillPids()).toEqual([4242]);
+      expect(killProcessTreeMock).not.toHaveBeenCalled();
+    });
+  });
+
   it("refuses legacy cleanup when a recorded foreground owner appears during discovery", async () => {
     await withPreparedGatewayTask(async ({ env }) => {
       vi.spyOn(process, "platform", "get").mockReturnValue("win32");
