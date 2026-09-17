@@ -48,6 +48,18 @@ const loadGoogleChatChannelRuntime = createLazyRuntimeNamedExport(
   "googleChatChannelRuntime",
 );
 
+type GoogleChatTextSendContext = Pick<
+  ChannelMessageSendTextContext,
+  | "cfg"
+  | "to"
+  | "text"
+  | "accountId"
+  | "replyToId"
+  | "threadId"
+  | "assertDirectAdapterHandoff"
+  | "onPlatformSendDispatch"
+>;
+
 function createGoogleChatSendReceipt(params: {
   messageId?: string;
   chatId: string;
@@ -237,7 +249,7 @@ export const googlechatOutboundAdapter = {
       threadId,
       assertDirectAdapterHandoff,
       onPlatformSendDispatch,
-    }: ChannelMessageSendTextContext) => {
+    }: GoogleChatTextSendContext) => {
       const account = resolveGoogleChatAccount({
         cfg,
         accountId,

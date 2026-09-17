@@ -77,6 +77,7 @@ async function send(route: SendRoute, hooks: SendHooks, to = "spaces/AAA", accou
   if (route === "generic") {
     return await googlechatPlugin.actions!.handleAction!({
       action: "send",
+      channel: "googlechat",
       cfg,
       accountId,
       params: { to, message: "hello" },
