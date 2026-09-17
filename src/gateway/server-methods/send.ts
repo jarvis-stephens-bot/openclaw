@@ -1153,12 +1153,14 @@ export const sendHandlers: GatewayRequestHandlers = {
                 gatewayClientScopes,
                 assertDirectAdapterHandoff,
                 onPlatformSendDispatch,
-                ...(request.action === "send"
-                  ? {
-                      // Recovery cannot retain a live run's closure-bound send authority.
-                      skipQueue: client?.internal?.agentRuntimeIdentity !== undefined,
-                    }
-                  : {}),
+                // Model-authored sends own proven-not-sent retries; every scheduled
+                // generic delivery must also stay inside its admitted job lifetime.
+                skipQueue:
+                  client?.internal?.agentRuntimeIdentity !== undefined &&
+                  (request.action === "send" ||
+                    Boolean(trustedContext.messageActionAuthorization?.scheduled))
+                    ? true
+                    : undefined,
               };
               const settleTerminalDelivery = async (
                 deliveredPayload: unknown,

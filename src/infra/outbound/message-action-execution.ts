@@ -692,8 +692,10 @@ export async function executeMessagePlugin(
       gateway,
       toolContext: authorization !== undefined ? authorization.toolContext : input.toolContext,
       messageActionAuthorization: authorization,
+      deliveryRetryOwner: input.actionOrigin === "message-tool" ? "caller" : undefined,
       assertDirectAdapterHandoff: input.assertDirectAdapterHandoff,
       onPlatformSendDispatch: input.onPlatformSendDispatch,
+      skipQueue: input.skipQueue,
       dryRun,
     });
   } catch (error) {

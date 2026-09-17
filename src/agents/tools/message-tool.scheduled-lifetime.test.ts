@@ -26,6 +26,7 @@ import type {
 } from "../../gateway/server-methods/types.js";
 import { recoverPendingDeliveries } from "../../infra/outbound/delivery-queue-recovery.js";
 import { loadUnfinishedDeliveries } from "../../infra/outbound/delivery-queue-storage.js";
+import { sendDurableMessageBatch } from "../../plugin-sdk/channel-outbound.js";
 import {
   captureActivePluginRegistrySnapshot,
   restoreActivePluginRegistrySnapshot,
@@ -111,6 +112,15 @@ it.each([
     laterError: "cron message action authority is no longer active",
     deliveryMode: "gateway" as const,
   },
+  ...(["direct", "gateway"] as const).map((deliveryMode) => ({
+    cause: `message authority closes before a ${deliveryMode} generic durable retry`,
+    revokeAt: "generic-retry" as const,
+    action: "reply" as const,
+    retire: noteActiveCronJobMessageActionAuthorityMutation,
+    accepted: false,
+    laterError: "cron message action authority is no longer active",
+    deliveryMode,
+  })),
   {
     cause: "message authority closes before a bound Gateway poll retry",
     revokeAt: "poll-retry" as const,
@@ -239,7 +249,7 @@ it.each([
             boundaryEntered.resolve();
             await releaseBoundary.promise;
           }
-          if (revokeAt === "retry") {
+          if (revokeAt === "retry" || revokeAt === "generic-retry") {
             boundaryEntered.resolve();
             await releaseBoundary.promise;
             await onPlatformSendDispatch?.();
@@ -296,11 +306,39 @@ it.each([
             : {}),
         }),
         actions: {
-          describeMessageTool: () => ({ actions: ["send", "poll", "set-presence"] }),
+          describeMessageTool: () => ({ actions: ["send", "poll", "reply", "set-presence"] }),
           prepareSendPayload: ({ payload }) => payload,
-          supportsAction: ({ action: requestedAction }) => requestedAction === "set-presence",
+          supportsAction: ({ action: requestedAction }) =>
+            requestedAction === "reply" || requestedAction === "set-presence",
           resolveExecutionMode: () => deliveryMode,
-          handleAction: async ({ action: requestedAction, onPlatformSendDispatch }) => {
+          handleAction: async ({
+            action: requestedAction,
+            cfg: actionConfig,
+            deliveryRetryOwner,
+            onPlatformSendDispatch,
+            assertDirectAdapterHandoff,
+            skipQueue,
+          }) => {
+            if (requestedAction === "reply") {
+              const result = await sendDurableMessageBatch({
+                cfg: actionConfig,
+                channel: "discord",
+                to: "channel:100000000000000001",
+                payloads: [{ text: "generic" }],
+                durability: "required",
+                deliveryRetryOwner,
+                onPlatformSendDispatch,
+                assertDirectAdapterHandoff,
+                skipQueue,
+              });
+              if (result.status === "failed" || result.status === "partial_failed") {
+                throw result.error;
+              }
+              return {
+                content: [{ type: "text", text: '{"ok":true}' }],
+                details: { ok: true },
+              };
+            }
             if (requestedAction !== "set-presence") {
               throw new Error(`Unexpected plugin action: ${requestedAction}`);
             }
@@ -457,7 +495,12 @@ it.each([
                         pollQuestion: "Ship?",
                         pollOption: ["Yes", "No"],
                       }
-                    : {}),
+                    : action === "reply"
+                      ? {
+                          target: "channel:100000000000000001",
+                          message: "generic",
+                        }
+                      : {}),
                 },
                 source.signal,
               ),
@@ -555,13 +598,18 @@ it.each([
         );
       }
       await expect(execute("after-revocation")).rejects.toThrow(laterError);
-      const sendAttempts = action === "send" && revokeAt !== "target" ? 1 : 0;
+      const sendAttempts =
+        (action === "send" && revokeAt !== "target") || revokeAt === "generic-retry" ? 1 : 0;
       expect(sendText).toHaveBeenCalledTimes(sendAttempts);
-      expect(sends).toEqual(Array.from({ length: sendAttempts }, () => "first"));
+      expect(sends).toEqual(
+        Array.from({ length: sendAttempts }, () =>
+          revokeAt === "generic-retry" ? "generic" : "first",
+        ),
+      );
       expect(queueIds).toEqual(Array.from({ length: sendAttempts }, () => undefined));
       expect(mutations).toEqual(accepted && action === "set-presence" ? [action] : []);
       expect(pollRequests).toEqual(action === "poll" ? ["initial"] : []);
-      if (revokeAt === "retry" || revokeAt === "multipart") {
+      if (revokeAt === "retry" || revokeAt === "generic-retry" || revokeAt === "multipart") {
         expect(await loadUnfinishedDeliveries(state.stateDir)).toEqual([]);
         const replay = vi.fn();
         await recoverPendingDeliveries({
