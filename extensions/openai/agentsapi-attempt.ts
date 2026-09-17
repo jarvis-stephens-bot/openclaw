@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import {
+  agentHarnessAttemptTerminal,
   clearActiveEmbeddedRun,
   emitAgentEvent,
   setActiveEmbeddedRun,
@@ -33,6 +34,8 @@ export async function runAgentsApiAttempt(
     params.hostCapabilities.assertActive();
   };
   assertCurrent();
+  const sessionTarget = params.sessionTarget;
+  if (!sessionTarget) { throw new Error("Agents API requires a host-prepared session target"); }
   if (!params.resolvedApiKey) {
     throw new Error("Agents API MVP requires an OpenAI API key");
   }
@@ -73,7 +76,7 @@ export async function runAgentsApiAttempt(
     void submission.catch(() => {});
     return submission;
   };
-  let terminal: AgentHarnessAttemptResult["terminal"] = { kind: "ok" };
+  let terminal: ReturnType<typeof agentHarnessAttemptTerminal.normalize> = { kind: "ok" };
   let rootTurn: AgentsApiEvent["turn"];
   const texts = new Map<string, string>();
   let usage: AssistantMessage["usage"] = {
@@ -293,7 +296,7 @@ export async function runAgentsApiAttempt(
           idempotencyKey: `agentsapi:${remoteSessionId}:${rootTurn.id}`,
         };
         const append = await appendSessionTranscriptMessageByIdentityStrict({
-          ...params.sessionTarget,
+          ...sessionTarget,
           config: params.config,
           message: assistant,
           prepareMessageAfterIdempotencyCheck: (message) => {
@@ -338,7 +341,7 @@ export async function runAgentsApiAttempt(
     sessionFileUsed: params.sessionFile,
     agentHarnessId: "agentsapi",
     messagesSnapshot: SessionManager.open(
-      params.sessionTarget,
+      sessionTarget,
       params.workspaceDir,
     ).buildSessionContext().messages,
     assistantTexts,
