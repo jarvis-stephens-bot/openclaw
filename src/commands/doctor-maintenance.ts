@@ -103,6 +103,7 @@ export async function beginDoctorMaintenance(params: {
   let repairStoresMayBeOpen = false;
   let resources: OpenClawDatabaseMaintenanceScope | undefined;
   let inspectingActivation = false;
+  let parentMustStopGateway = false;
   let assertUpdateAdmissionCurrent: (() => void) | undefined;
   const databasePath = path.resolve(resolveOpenClawStateSqlitePath(env));
   const acquireMaintenanceResources = () => {
@@ -270,6 +271,7 @@ export async function beginDoctorMaintenance(params: {
         inspection.serviceUpdateVerdict?.kind === "owned" &&
         inspection.offline !== true
       ) {
+        parentMustStopGateway = true;
         throw new Error(
           "The update parent must stop the managed Gateway before Doctor maintenance; Doctor left the service unchanged.",
         );
@@ -380,7 +382,7 @@ export async function beginDoctorMaintenance(params: {
       throw error;
     }
     const refusal = new Error(
-      `Doctor could not enter maintenance. ${String(error)}${parentActivation === undefined ? ` Stop the Gateway service and other OpenClaw processes using this state, then run ${formatCliCommand("openclaw doctor --fix", env)} from an independent shell.` : ""}`,
+      `Doctor could not enter maintenance. ${String(error)}${parentMustStopGateway ? "" : ` Stop the Gateway service and other OpenClaw processes using this state, then run ${formatCliCommand("openclaw doctor --fix", env)} from an independent shell.`}`,
       { cause: error },
     );
     const recovery = inspectingActivation
