@@ -118,6 +118,7 @@ it.each([
     action: "reply" as const,
     retire: noteActiveCronJobMessageActionAuthorityMutation,
     accepted: false,
+    partial: undefined,
     laterError: "cron message action authority is no longer active",
     deliveryMode,
   })),
@@ -278,9 +279,7 @@ it.each([
           } catch (error) {
             if (revokeAt === "poll-partial") {
               throw createChannelPartialDeliveryError(error, {
-                channel: "discord",
-                messageId: "poll-partial",
-                pollId: "poll-partial",
+                messageIds: ["poll-partial"],
                 visibleReplySent: true,
               });
             }
@@ -310,7 +309,7 @@ it.each([
           prepareSendPayload: ({ payload }) => payload,
           supportsAction: ({ action: requestedAction }) =>
             requestedAction === "reply" || requestedAction === "set-presence",
-          resolveExecutionMode: () => deliveryMode,
+          resolveExecutionMode: () => (deliveryMode === "gateway" ? "gateway" : "local"),
           handleAction: async ({
             action: requestedAction,
             cfg: actionConfig,
@@ -352,7 +351,7 @@ it.each([
                 await onPlatformSendDispatch?.();
               } catch (error) {
                 throw createChannelPartialDeliveryError(error, {
-                  messageId: "message-action",
+                  messageIds: ["message-action"],
                   visibleReplySent: true,
                 });
               }
@@ -463,7 +462,7 @@ it.each([
         },
       });
       catalog.push(tool);
-      const invoke = <T>(run: () => T): T =>
+      const invoke = <T>(run: () => Promise<T>) =>
         gatewayCaller ? withGatewayToolCallerIdentity(gatewayCaller, run) : run();
       const send = (callId: string, message: string, gatewayUrl?: string) =>
         invoke(() =>
@@ -567,8 +566,9 @@ it.each([
                     revokeAt === "multipart"
                       ? { messageIds: ["message-1"] }
                       : {
-                          messageId:
+                          messageIds: [
                             revokeAt === "partial-action" ? "message-action" : "poll-partial",
+                          ],
                         },
                 },
               }
