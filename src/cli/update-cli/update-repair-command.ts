@@ -8,7 +8,6 @@ import { UPDATE_RUN_ID_ENV } from "../../infra/update-control-plane-sentinel.js"
 import { readBuiltGatewayBuildId } from "../../infra/update-git-runtime.js";
 import {
   inspectUpdateRepairDriverAdmission,
-  isAbandonedUpdateRun,
   isUnacknowledgedAbandonedUpdateRun,
 } from "../../infra/update-run-activity.js";
 import {
@@ -17,7 +16,10 @@ import {
   reconcileAbandonedUpdateRuns,
   recordUpdateRunRepairContinuation,
 } from "../../infra/update-run-ledger.js";
-import type { UpdateRunRecord } from "../../infra/update-run-record.js";
+import {
+  isAcknowledgedAbandonedUpdateRun,
+  type UpdateRunRecord,
+} from "../../infra/update-run-record.js";
 import { DEFAULT_UPDATE_STEP_TIMEOUT_MS } from "../../infra/update-run-timeouts.js";
 import { defaultRuntime } from "../../runtime.js";
 import { resolveOpenClawStateSqlitePath } from "../../state/openclaw-state-db.paths.js";
@@ -60,8 +62,8 @@ function inspectNewerRecoveryHistory(recoveryRuns: UpdateRunRecord[], env: NodeJ
   const postCoreRuns = history.filter(
     (run) =>
       run.createdAtMs >= oldestRecovery &&
-      isAbandonedUpdateRun(run) &&
-      !run.steps.some((step) => step.step === "reconcile:acknowledged") &&
+      run.status === "failed" &&
+      !isAcknowledgedAbandonedUpdateRun(run) &&
       needsPostCoreRepair(run),
   );
   // A bounded prefix cannot prove absence of interrupted work beyond its tail.

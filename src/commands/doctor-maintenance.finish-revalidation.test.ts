@@ -111,6 +111,7 @@ type StoppedUnitState =
   | "legacy-gateway-lifecycle-contended";
 type Continuation =
   | "own"
+  | "own-child"
   | "manual"
   | "competing"
   | "foreign"
@@ -487,6 +488,12 @@ async function runDoctorFinishForStoppedUnit(
           restart,
         }),
       );
+      const parentOwnsService =
+        continuation === "own" || continuation?.includes("before-") === true;
+      if (parentOwnsService) {
+        vi.stubEnv("OPENCLAW_UPDATE_RUN_ID", undefined);
+        vi.stubEnv("OPENCLAW_UPDATE_PARENT_ALLOWS_GATEWAY_ACTIVATION", undefined);
+      }
       const logs: string[] = [];
       const databasePath = path.join(home, ".openclaw", "state", "openclaw.sqlite");
       const coordinator =
@@ -504,6 +511,7 @@ async function runDoctorFinishForStoppedUnit(
         : undefined;
       const maintenance = await beginDoctorMaintenance({
         root: process.cwd(),
+        ...(parentOwnsService ? { runId } : {}),
         options: { repair: true },
         runtime: {
           log: (...args: Array<unknown>) => {
@@ -522,6 +530,25 @@ async function runDoctorFinishForStoppedUnit(
         }
       });
       expect(maintenance).toBeDefined();
+      if (continuation === "own" && !legacyCatalog) {
+        await maintenance?.releaseState();
+        await withEnvAsync(
+          {
+            OPENCLAW_UPDATE_RUN_ID: runId,
+            OPENCLAW_UPDATE_PARENT_ALLOWS_GATEWAY_ACTIVATION: "0",
+          },
+          async () => {
+            const child = await beginDoctorMaintenance({
+              root: process.cwd(),
+              options: { repair: true },
+              runtime: { log: () => {}, error: () => {}, exit: () => {} },
+            });
+            await child?.finish({});
+          },
+        );
+        expect(mocks.stops).toBe(1);
+        expect(restart).not.toHaveBeenCalled();
+      }
       if (legacyCatalog) {
         expect(() => maintenance?.run(() => listUpdateRuns())).toThrow();
       }
@@ -681,10 +708,17 @@ it.each(["foreign", "unrecorded", "unknown-adopter"] as const)(
         ? "other-host.invalid"
         : continuation === "unknown-adopter"
           ? "unrecorded adopter"
-          : "update parent owns Gateway activation",
+          : "update parent must stop the managed Gateway",
     );
   },
 );
+
+it("never lets the Doctor child stop or restart its parent's running service", async () => {
+  await expect(runDoctorFinishForStoppedUnit("retained", "own-child")).rejects.toThrow(
+    "update parent must stop the managed Gateway",
+  );
+  expect(mocks.stops).toBe(0);
+});
 
 it("rechecks continuation before stopping the service", async () => {
   await expect(runDoctorFinishForStoppedUnit("retained", "lost-before-stop")).rejects.toThrow(

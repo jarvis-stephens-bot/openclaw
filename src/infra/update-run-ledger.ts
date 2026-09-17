@@ -22,7 +22,6 @@ import {
 import { assertSqliteSchemaContains } from "./sqlite-schema-contract.js";
 import {
   inspectUpdateRepairDriverAdmission,
-  isAbandonedUpdateRun,
   isStaleIdentitylessUpdateRun,
   recordedUpdateRunDrivers,
 } from "./update-run-activity.js";
@@ -49,6 +48,7 @@ import {
 } from "./update-run-reader.js";
 import {
   finishUpdateRunRecord,
+  isAbandonedUpdateRun,
   type FinishUpdateRunResult,
   type UpdateRunRecord,
   type UpdateRunPhase,

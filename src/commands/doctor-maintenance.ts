@@ -74,9 +74,11 @@ export async function beginDoctorMaintenance(params: {
   options: DoctorOptions;
   root: string | null;
   runtime: RuntimeEnv;
+  runId?: string;
 }): Promise<
   | {
       run<T>(operation: () => T): T;
+      releaseState(): Promise<void>;
       release(): Promise<void>;
       finish(cfg: OpenClawConfig): Promise<void>;
       warnings?: string[];
@@ -86,7 +88,7 @@ export async function beginDoctorMaintenance(params: {
   if (!(params.options.repair === true || params.options.yes === true)) {
     return undefined;
   }
-  const env = { ...process.env };
+  const env = { ...process.env, ...(params.runId ? { [UPDATE_RUN_ID_ENV]: params.runId } : {}) };
   const parentActivation = isDoctorUpdateRepairMode(resolveDoctorRepairMode(params.options))
     ? resolveUpdateParentGatewayActivation(env)
     : undefined;
@@ -101,7 +103,6 @@ export async function beginDoctorMaintenance(params: {
   let repairStoresMayBeOpen = false;
   let resources: OpenClawDatabaseMaintenanceScope | undefined;
   let inspectingActivation = false;
-  let assertContinuationCurrent: (() => void) | undefined;
   let assertUpdateAdmissionCurrent: (() => void) | undefined;
   const databasePath = path.resolve(resolveOpenClawStateSqlitePath(env));
   const acquireMaintenanceResources = () => {
@@ -113,7 +114,7 @@ export async function beginDoctorMaintenance(params: {
     resources = createOpenClawDatabaseMaintenanceScope(owner.createSchemaFenceDelegate);
     coordinators.push(acquireStateDatabaseCoordinator({ databasePath, busyTimeoutMs: 250 }));
   };
-  const release = async () => {
+  const releaseState = async () => {
     if (repairStoresMayBeOpen) {
       await resources?.close();
       repairStoresMayBeOpen = false;
@@ -121,12 +122,101 @@ export async function beginDoctorMaintenance(params: {
     for (const coordinator of coordinators.splice(0).toReversed()) {
       coordinator.release();
     }
+  };
+  const release = async () => {
+    await releaseState();
     const recovery = stopped?.windowsTaskAutoStartRecovery;
     try {
       await serviceMaintenance?.maybeResumeWindowsTaskAutoStartAfterPackageUpdate(stopped);
     } finally {
       await recovery?.complete();
     }
+  };
+  const finish = async (cfg: OpenClawConfig) => {
+    await release();
+    const before = stopped;
+    const root = params.root;
+    if (!before?.stopped || !before.serviceEnv || !root) {
+      return;
+    }
+    try {
+      const serviceEnv = before.serviceEnv;
+      const [
+        { readGatewayServiceState, resolveGatewayService },
+        { withGatewayServiceOperationLock },
+        { resolveUpdatedGatewayRestartPort },
+        { renderRestartDiagnostics, waitForGatewayHealthyRestart },
+        { revalidateManagedGatewayServiceAfterUpdate },
+      ] = await Promise.all([
+        import("../daemon/service.js"),
+        import("../daemon/service-operation-lock.js"),
+        import("../cli/update-cli/update-command-service-plan.js"),
+        import("../cli/daemon-cli/restart-health.js"),
+        import("../cli/update-cli/update-command-service-maintenance.js"),
+      ]);
+      const service = resolveGatewayService();
+      const state = await withGatewayServiceOperationLock(serviceEnv, async (assertCurrent) => {
+        const assertMaintenanceCurrent = () => {
+          assertCurrent();
+          assertUpdateAdmissionCurrent?.();
+        };
+        assertMaintenanceCurrent();
+        const current = await readGatewayServiceState(service, {
+          env: serviceEnv,
+          requireEffective: true,
+          requireLoadedCommand: true,
+          // A stopped unit may be collected. Reload only its metadata under
+          // live custody of the recorded manager, then revalidate the launcher.
+          ...(process.platform === "linux" && before.serviceManagerUid !== undefined
+            ? {
+                loadForInspection: {
+                  managerUid: before.serviceManagerUid,
+                  assertCurrent: assertMaintenanceCurrent,
+                  assertReadCurrent: assertCurrent,
+                },
+              }
+            : {}),
+        });
+        assertMaintenanceCurrent();
+        assertDoctorServiceSelection(env, current.env);
+        await revalidateManagedGatewayServiceAfterUpdate({
+          state: current,
+          root,
+          preManagedServiceStop: before,
+        });
+        assertMaintenanceCurrent();
+        await service.restart({
+          env: current.env,
+          stdout: params.options.json ? process.stderr : process.stdout,
+          preserveDefinition: true,
+          assertCurrent: assertMaintenanceCurrent,
+        });
+        assertMaintenanceCurrent();
+        return current;
+      });
+      const port = await resolveUpdatedGatewayRestartPort({
+        config: cfg,
+        serviceEnv: state.env,
+        serviceCommand: state.command,
+      });
+      const health = await waitForGatewayHealthyRestart({
+        service,
+        port,
+        env: state.env,
+        requireRunningService: true,
+      });
+      if (!health.healthy) {
+        throw new Error(
+          `Doctor repaired state, but the managed Gateway did not become ready: ${renderRestartDiagnostics(health).join(" ")}. Run ${formatCliCommand("openclaw gateway status --deep", env)}.`,
+        );
+      }
+    } catch (error) {
+      throw new Error(
+        `The managed Gateway could not be restored after Doctor maintenance: ${String(error)} Run ${formatCliCommand("openclaw gateway status --deep", env)}, then ${formatCliCommand("openclaw gateway restart", env)} after resolving the reported failure.`,
+        { cause: error },
+      );
+    }
+    params.runtime.log("Gateway restarted and verified after Doctor repair.");
   };
   try {
     if (
@@ -169,21 +259,19 @@ export async function beginDoctorMaintenance(params: {
             ? admission.run
             : admission.runs.find((run) => run.runId === inheritedRunId);
         if (continuation?.steps.some((step) => step.step === "finalize:repair-continuation")) {
-          assertContinuationCurrent = () => {
+          assertUpdateAdmissionCurrent = () => {
             readAdmission();
             recordUpdateRunRepairContinuation(continuation.runId, inheritedRunId, { env });
           };
-          assertUpdateAdmissionCurrent = assertContinuationCurrent;
         }
       }
       if (
         parentActivation !== undefined &&
-        !assertContinuationCurrent &&
         inspection.serviceUpdateVerdict?.kind === "owned" &&
         inspection.offline !== true
       ) {
         throw new Error(
-          "The update parent owns Gateway activation. Stop the service through its owner before retrying the update; Doctor will not stop or restart it.",
+          "The update parent must stop the managed Gateway before Doctor maintenance; Doctor left the service unchanged.",
         );
       }
       try {
@@ -218,9 +306,8 @@ export async function beginDoctorMaintenance(params: {
         if (inspection.serviceEnv) {
           assertDoctorServiceSelection(env, inspection.serviceEnv);
         }
-        // Explicit repair continuation may park and restore its own service;
-        // ordinary updater finalization leaves activation with the parent.
-        if (parentActivation === undefined || assertContinuationCurrent) {
+        // Even an owning continuation leaves native activation with its parent.
+        if (parentActivation === undefined) {
           inspection.serviceUpdateVerdict.refreshDefinition = false;
           stopped = await maybeStopManagedServiceBeforeMutableUpdate({
             updateInstallKind: "package",
@@ -229,6 +316,9 @@ export async function beginDoctorMaintenance(params: {
             jsonMode: true,
             expectedService: inspection,
             assertCurrent: assertUpdateAdmissionCurrent,
+            onStopped: (before) => {
+              stopped = before;
+            },
           });
           assertDoctorMaintenanceInspection(stopped, env);
           if (stopped.stopped) {
@@ -273,12 +363,24 @@ export async function beginDoctorMaintenance(params: {
     }
     repairStoresMayBeOpen = true;
   } catch (error) {
-    await release();
+    try {
+      // Discovery has not run yet; restore a service parked before admission failed.
+      if (stopped?.stopped) {
+        const { readConfigFileSnapshot } = await import("../config/config.js");
+        await finish((await readConfigFileSnapshot({ skipPluginValidation: true })).config);
+      } else {
+        await release();
+      }
+    } catch (restoreError) {
+      throw new AggregateError([error, restoreError], `${String(error)} ${String(restoreError)}`, {
+        cause: restoreError,
+      });
+    }
     if (error instanceof DoctorUnreadableStateDatabaseError) {
       throw error;
     }
     const refusal = new Error(
-      `Doctor could not enter maintenance. ${String(error)} Stop the Gateway service and other OpenClaw processes using this state, then run ${formatCliCommand("openclaw doctor --fix", env)} from an independent shell.`,
+      `Doctor could not enter maintenance. ${String(error)}${parentActivation === undefined ? ` Stop the Gateway service and other OpenClaw processes using this state, then run ${formatCliCommand("openclaw doctor --fix", env)} from an independent shell.` : ""}`,
       { cause: error },
     );
     const recovery = inspectingActivation
@@ -294,91 +396,7 @@ export async function beginDoctorMaintenance(params: {
     warnings,
     run: (operation) => resources!.run(operation),
     release,
-    async finish(cfg) {
-      await release();
-      const before = stopped;
-      const root = params.root;
-      if (!before?.stopped || !before.serviceEnv || !root) {
-        return;
-      }
-      try {
-        const serviceEnv = before.serviceEnv;
-        const [
-          { readGatewayServiceState, resolveGatewayService },
-          { withGatewayServiceOperationLock },
-          { resolveUpdatedGatewayRestartPort },
-          { renderRestartDiagnostics, waitForGatewayHealthyRestart },
-          { revalidateManagedGatewayServiceAfterUpdate },
-        ] = await Promise.all([
-          import("../daemon/service.js"),
-          import("../daemon/service-operation-lock.js"),
-          import("../cli/update-cli/update-command-service-plan.js"),
-          import("../cli/daemon-cli/restart-health.js"),
-          import("../cli/update-cli/update-command-service-maintenance.js"),
-        ]);
-        const service = resolveGatewayService();
-        const state = await withGatewayServiceOperationLock(serviceEnv, async (assertCurrent) => {
-          const assertMaintenanceCurrent = () => {
-            assertCurrent();
-            assertUpdateAdmissionCurrent?.();
-          };
-          assertMaintenanceCurrent();
-          const current = await readGatewayServiceState(service, {
-            env: serviceEnv,
-            requireEffective: true,
-            requireLoadedCommand: true,
-            // A stopped unit may be collected. Reload only its metadata under
-            // live custody of the recorded manager, then revalidate the launcher.
-            ...(process.platform === "linux" && before.serviceManagerUid !== undefined
-              ? {
-                  loadForInspection: {
-                    managerUid: before.serviceManagerUid,
-                    assertCurrent: assertMaintenanceCurrent,
-                    assertReadCurrent: assertCurrent,
-                  },
-                }
-              : {}),
-          });
-          assertMaintenanceCurrent();
-          assertDoctorServiceSelection(env, current.env);
-          await revalidateManagedGatewayServiceAfterUpdate({
-            state: current,
-            root,
-            preManagedServiceStop: before,
-          });
-          assertMaintenanceCurrent();
-          await service.restart({
-            env: current.env,
-            stdout: process.stdout,
-            preserveDefinition: true,
-            assertCurrent: assertMaintenanceCurrent,
-          });
-          assertMaintenanceCurrent();
-          return current;
-        });
-        const port = await resolveUpdatedGatewayRestartPort({
-          config: cfg,
-          serviceEnv: state.env,
-          serviceCommand: state.command,
-        });
-        const health = await waitForGatewayHealthyRestart({
-          service,
-          port,
-          env: state.env,
-          requireRunningService: true,
-        });
-        if (!health.healthy) {
-          throw new Error(
-            `Doctor repaired state, but the managed Gateway did not become ready: ${renderRestartDiagnostics(health).join(" ")}. Run ${formatCliCommand("openclaw gateway status --deep", env)}.`,
-          );
-        }
-      } catch (error) {
-        throw new Error(
-          `Doctor repaired state, but could not restore the managed Gateway: ${String(error)} Run ${formatCliCommand("openclaw gateway status --deep", env)}, then ${formatCliCommand("openclaw gateway restart", env)} after resolving the reported failure.`,
-          { cause: error },
-        );
-      }
-      params.runtime.log("Gateway restarted and verified after Doctor repair.");
-    },
+    releaseState,
+    finish,
   };
 }
