@@ -144,7 +144,8 @@ node scripts/e2e/lib/release-scenarios/assertions.mjs assert-package-version "$p
 # Reinstall the same explicit core artifact after the plugin registry becomes available.
 # The plugin must recover even though the installed core version is already current.
 mkdir "$npm_registry_dir/recovery"
-export OPENCLAW_NPM_REGISTRY_UPSTREAM=https://registry.npmjs.org/
+# Preserve unpublished core dependencies when the recovery registry handles the plugin.
+export OPENCLAW_NPM_REGISTRY_UPSTREAM="${npm_config_registry:-${NPM_CONFIG_REGISTRY:-https://registry.npmjs.org/}}"
 start_npm_fixture_registry "@openclaw/demo-corrupt-plugin" "0.0.1" /tmp/demo-corrupt-plugin.tgz "$npm_registry_dir/recovery"
 echo "Updating OpenClaw with a recoverable corrupt plugin present..."
 if run_corrupt_update /tmp/openclaw-update-corrupt-plugin; then
