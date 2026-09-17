@@ -754,7 +754,7 @@ export function createMessageTool(options?: MessageToolOptions): AnyAgentTool {
           // A completed provider write must settle even if its caller was revoked
           // while awaiting the accepted response. Its next request stays fenced.
           if (!scheduledWrite && (!messageActionAuthorization.scheduled || scheduledRead)) {
-            assertActionCurrent(false);
+            assertActionCurrent(Boolean(scheduledRead));
           }
           const messageDelivery = projectEmbeddedMessageDeliveryFact(result, currentSourceReply);
           groupThread.record(result, sourceReply, currentSourceReply, requestedSourceReplyFinal);
