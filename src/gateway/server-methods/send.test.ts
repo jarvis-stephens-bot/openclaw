@@ -6,10 +6,6 @@ import path from "node:path";
 import { expectDefined } from "@openclaw/normalization-core";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
-  GATEWAY_CLIENT_MODES,
-  GATEWAY_CLIENT_NAMES,
-} from "../../../packages/gateway-protocol/src/client-info.js";
-import {
   ErrorCodes,
   GatewayErrorDetailCodes,
 } from "../../../packages/gateway-protocol/src/index.js";
@@ -46,7 +42,14 @@ import {
 import { DEDUPE_MAX, DEDUPE_TTL_MS } from "../server-constants.js";
 import { startGatewayMaintenanceTimers } from "../server-maintenance.js";
 import { createGatewayMaintenanceStateForTest } from "../test-helpers.maintenance-state.js";
-import { messageActionContextFromSessionKeyForTests } from "./send.test-helpers.js";
+import {
+  agentRuntimeClientForTests as agentRuntimeClient,
+  createMessageActionClientForTests,
+  directCliClientForTests as directCliClient,
+  firstRespondCall,
+  messageActionContextFromSessionKeyForTests,
+  resolveAgentIdFromSessionKeyForTests,
+} from "./send.test-helpers.js";
 import type { GatewayRequestContext } from "./types.js";
 
 type ResolveOutboundTarget = typeof import("../../infra/outbound/targets.js").resolveOutboundTarget;
@@ -120,26 +123,6 @@ vi.mock("../../channels/plugins/message-action-dispatch.js", async (importOrigin
 
 const TEST_AGENT_WORKSPACE = "/tmp/openclaw-test-workspace";
 let sendHandlers: typeof import("./send.js").sendHandlers;
-
-function resolveAgentIdFromSessionKeyForTests(params: {
-  sessionKey?: string;
-  agentId?: string;
-}): string {
-  const explicitAgentId = params.agentId?.trim().toLowerCase();
-  if (typeof params.sessionKey === "string") {
-    const match = params.sessionKey.match(/^agent:([^:]+)/i);
-    if (match?.[1]) {
-      const sessionAgentId = match[1].toLowerCase();
-      if (explicitAgentId && explicitAgentId !== sessionAgentId) {
-        throw new Error(
-          `agent "${explicitAgentId}" does not match session key agent "${sessionAgentId}"`,
-        );
-      }
-      return sessionAgentId;
-    }
-  }
-  return explicitAgentId ?? "main";
-}
 
 vi.mock("../../agents/agent-scope.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../agents/agent-scope.js")>()),
@@ -338,43 +321,7 @@ async function runMessageActionRequest(
   context: GatewayRequestContext = makeContext(),
 ) {
   const respond = vi.fn();
-  const sessionKey = typeof params.sessionKey === "string" ? params.sessionKey : undefined;
-  const agentId =
-    typeof params.agentId === "string"
-      ? params.agentId
-      : sessionKey
-        ? resolveAgentIdFromSessionKeyForTests({ sessionKey })
-        : undefined;
-  const effectiveClient =
-    client === undefined && sessionKey && agentId
-      ? {
-          internal: {
-            agentRuntimeIdentity: {
-              kind: "agentRuntime" as const,
-              agentId,
-              sessionKey,
-              messageActionContext: {
-                expiresAtMs: Date.now() + 60_000,
-                sessionId: typeof params.sessionId === "string" ? params.sessionId : undefined,
-                requesterAccountId:
-                  typeof params.requesterAccountId === "string"
-                    ? params.requesterAccountId
-                    : undefined,
-                requesterSenderId:
-                  typeof params.requesterSenderId === "string"
-                    ? params.requesterSenderId
-                    : undefined,
-                toolContext: {
-                  ...messageActionContextFromSessionKeyForTests(sessionKey).toolContext,
-                  ...(params.toolContext && typeof params.toolContext === "object"
-                    ? params.toolContext
-                    : {}),
-                },
-              },
-            },
-          },
-        }
-      : client;
+  const effectiveClient = createMessageActionClientForTests(params, client);
   await expectDefined(
     sendHandlers["message.action"],
     'sendHandlers["message.action"] test invariant',
@@ -387,30 +334,6 @@ async function runMessageActionRequest(
     isWebchatConnect: () => false,
   });
   return { respond };
-}
-
-function directCliClient() {
-  return {
-    connect: {
-      client: {
-        id: GATEWAY_CLIENT_NAMES.CLI,
-        mode: GATEWAY_CLIENT_MODES.CLI,
-      },
-    },
-  };
-}
-
-function agentRuntimeClient(sessionKey: string, agentId = "main") {
-  return {
-    internal: {
-      agentRuntimeIdentity: {
-        kind: "agentRuntime" as const,
-        agentId,
-        sessionKey,
-        messageActionContext: messageActionContextFromSessionKeyForTests(sessionKey),
-      },
-    },
-  } as never;
 }
 
 async function withTempOpenClawStateDir<T>(test: (stateDir: string) => Promise<T>): Promise<T> {
@@ -435,22 +358,6 @@ function appendTranscriptCall(index = 0): Record<string, any> | undefined {
     [Record<string, any>]
   >;
   return calls[index]?.[0];
-}
-
-function firstRespondCall(respond: ReturnType<typeof vi.fn>) {
-  const calls = respond.mock.calls as unknown as Array<
-    [
-      boolean,
-      Record<string, any> | undefined,
-      Record<string, any> | undefined,
-      Record<string, any> | undefined,
-    ]
-  >;
-  const call = calls[0];
-  if (!call) {
-    throw new Error("Expected respond call");
-  }
-  return call;
 }
 
 function lastDispatchChannelMessageActionCall(): Record<string, any> | undefined {

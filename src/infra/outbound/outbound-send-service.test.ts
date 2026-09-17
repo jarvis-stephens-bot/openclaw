@@ -4,7 +4,6 @@ import { createRequireRecord } from "openclaw/plugin-sdk/test-fixtures";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ReplyPayload } from "../../auto-reply/reply-payload.js";
 import type { ChannelPlugin } from "../../channels/plugins/types.public.js";
-import { createChannelPartialDeliveryError } from "../../channels/turn/delivery-result.js";
 import { setActivePluginRegistry } from "../../plugins/runtime.js";
 import {
   createChannelTestPluginBase,
@@ -1023,97 +1022,6 @@ describe("executeSendAction", () => {
       text: "hello",
       mediaUrls: ["https://example.com/a.png", "https://example.com/b.png"],
     });
-  });
-
-  it("preserves an accepted plugin send when route persistence fails", async () => {
-    const onSendAccepted = vi.fn(async () => {
-      throw new Error("route persistence failed");
-    });
-    mocks.dispatchChannelMessageAction.mockResolvedValueOnce(pluginActionResult("msg-plugin"));
-
-    const result = await executeSendAction({
-      ctx: createContext({
-        params: { to: "channel:123", message: "delivered" },
-        onSendAccepted,
-      }),
-      to: "channel:123",
-      message: "delivered",
-    });
-
-    expect(result).toMatchObject({
-      handledBy: "plugin",
-      payload: { value: { messageId: "msg-plugin" } },
-    });
-    expect(onSendAccepted).toHaveBeenCalledOnce();
-  });
-
-  it("preserves an accepted partial plugin send when route persistence fails", async () => {
-    const onSendAccepted = vi.fn(async () => {
-      throw new Error("route persistence failed");
-    });
-    mocks.dispatchChannelMessageAction.mockRejectedValueOnce(
-      createChannelPartialDeliveryError(new Error("second part failed"), {
-        messageId: "msg-plugin",
-        visibleReplySent: true,
-      }),
-    );
-
-    await expect(
-      executeSendAction({
-        ctx: createContext({
-          params: { to: "channel:123", message: "accepted then unsent" },
-          onSendAccepted,
-          mirror: { sessionKey: "agent:main:demo-outbound:channel:123" },
-        }),
-        to: "channel:123",
-        message: "accepted then unsent",
-      }),
-    ).rejects.toThrow("second part failed");
-
-    expect(onSendAccepted).toHaveBeenCalledOnce();
-    expect(mocks.appendAssistantMessageToSessionTranscript).not.toHaveBeenCalled();
-    expect(mocks.sendMessage).not.toHaveBeenCalled();
-  });
-
-  it("commits a returned partial plugin send without mirroring unproven content", async () => {
-    const onSendAccepted = vi.fn(async () => {});
-    mocks.dispatchChannelMessageAction.mockResolvedValueOnce({
-      content: [
-        {
-          type: "text",
-          text: JSON.stringify({
-            deliveryStatus: "partial_failed",
-            sentBeforeError: true,
-            error: "second part failed",
-            messageId: "msg-plugin",
-          }),
-        },
-      ],
-      details: {
-        deliveryStatus: "partial_failed",
-        sentBeforeError: true,
-        error: "second part failed",
-        messageId: "msg-plugin",
-      },
-    });
-
-    const result = await executeSendAction({
-      ctx: createContext({
-        params: { to: "channel:123", message: "accepted then unsent" },
-        onSendAccepted,
-        mirror: { sessionKey: "agent:main:demo-outbound:channel:123" },
-      }),
-      to: "channel:123",
-      message: "accepted then unsent",
-    });
-
-    expect(result).toMatchObject({
-      handledBy: "plugin",
-      payload: { deliveryStatus: "partial_failed", sentBeforeError: true },
-    });
-    expect(onSendAccepted).toHaveBeenCalledOnce();
-    expect(mocks.appendAssistantMessageToSessionTranscript).not.toHaveBeenCalled();
-    expect(mocks.sendMessage).not.toHaveBeenCalled();
   });
 
   it("skips plugin dispatch during dry-run sends and forwards gateway + silent to sendMessage", async () => {

@@ -11,7 +11,7 @@ import type {
   ChannelMessageActionContext,
   ChannelOutboundAdapter,
 } from "../../channels/plugins/types.public.js";
-import { isChannelPartialDeliveryError } from "../../channels/turn/delivery-result.js";
+import { isChannelPartialDeliveryError } from "../../channels/turn/partial-delivery-error.js";
 import { appendAssistantMessageToSessionTranscript } from "../../config/sessions.js";
 import { getOwnedSessionTranscriptWriterFence } from "../../config/sessions/transcript-write-context.js";
 import {
