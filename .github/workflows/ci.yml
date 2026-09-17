@@ -3282,12 +3282,19 @@ jobs:
         # Main owns full coverage. PRs need an exact-tree coverage receipt from
         # their admitted Node plan; release gates retain their separate merge tree.
         # State cases mutate process-global config and database state, so keep each
-        # process serial while distributing the corpus across four processes.
+        # process serial and admit the four state shards within actual CPU capacity.
         if: matrix.task == 'baseline-ratchets' && !(github.repository == 'openclaw/openclaw' && github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.preflight.outputs.run_check == 'true') && !(github.repository == 'openclaw/openclaw' && github.event_name == 'pull_request' && needs.preflight.outputs.startup_corpus_node_revision && needs.preflight.outputs.startup_corpus_node_revision == needs.preflight.outputs.checkout_revision)
         run: |
           set -euo pipefail
           # Prepare once before five Vitest launchers compete for the build heap.
           pnpm build qaRuntime
+          cores="$(node -p 'require("node:os").availableParallelism()')"
+          # Worker compilation also uses CPU: reserve four cores per invocation.
+          # The 4-vCPU ratchets label can deliver only two usable CPUs.
+          concurrency=$((cores / 4))
+          if (( concurrency < 1 )); then concurrency=1; fi
+          if (( concurrency > 5 )); then concurrency=5; fi
+          echo "[corpus:resources] logicalCpuCount=$cores admitted runs=$concurrency"
           run_startup_corpus() {
             if [[ "${{ needs.preflight.outputs.frozen_target }}" == "true" ]]; then
               node scripts/run-vitest.mjs run --config test/vitest/vitest.runtime-config.config.ts "$@"
@@ -3298,23 +3305,33 @@ jobs:
           }
           pids=()
           labels=()
-          run_startup_corpus src/config/config-startup-corpus.test.ts &
-          pids+=("$!")
-          labels+=("config corpus")
-          for shard in {1..4}; do
-            OPENCLAW_TEST_STARTUP_CORPUS_SHARD="${shard}/4" \
-              run_startup_corpus src/config/state-startup-corpus.test.ts &
+          result=0
+          wait_corpus_batch() {
+            for index in "${!pids[@]}"; do
+              if ! wait "${pids[$index]}"; then
+                echo "::error::${labels[$index]} failed"
+                result=1
+              fi
+            done
+            pids=()
+            labels=()
+          }
+          for shard in {0..4}; do
+            if (( shard == 0 )); then
+              run_startup_corpus src/config/config-startup-corpus.test.ts &
+              labels+=("config corpus")
+            else
+              OPENCLAW_TEST_STARTUP_CORPUS_SHARD="${shard}/4" \
+                run_startup_corpus src/config/state-startup-corpus.test.ts &
+              labels+=("state corpus ${shard}/4")
+            fi
             pids+=("$!")
-            labels+=("state corpus ${shard}/4")
-          done
-          status=0
-          for index in "${!pids[@]}"; do
-            if ! wait "${pids[$index]}"; then
-              echo "::error::${labels[$index]} failed"
-              status=1
+            if (( ${#pids[@]} == concurrency )); then
+              wait_corpus_batch
             fi
           done
-          exit "$status"
+          wait_corpus_batch
+          exit "$result"
 
   qa-smoke-ci-profile:
     permissions:

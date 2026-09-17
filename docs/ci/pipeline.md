@@ -87,9 +87,13 @@ checkout revision. Partial, filtered or unknown plans retain the explicit step;
 release-gate dispatches retain their separate merge-tree proof. Both state
 repair passes, all static baseline ratchets and required Node failure aggregation
 remain unchanged.
-The explicit step prepares the runtime once with `pnpm build qaRuntime` before
-forking the config process and four state processes. A failed preparation stops
-the step before those launchers consume memory or attempt their own builds.
+The explicit step prepares the runtime once with `pnpm build qaRuntime`, then
+runs the config process and all four state shards in bounded batches. It uses
+Node's available CPU count, reserving four CPUs per invocation with at least
+one slot. Small runners execute the five runs serially, avoiding competing
+worker compilations inside the unchanged 120-second no-output budget. A failed
+runtime preparation stops admission; a failed corpus run is reported while the
+remaining shards still run.
 The corpus uses the normal bundled-plugin resolver to select the prepared
 runtime from this checkout instead of forcing TypeScript plugin entrypoints.
 Plugins whose Doctor contracts require source loading retain that behavior;
