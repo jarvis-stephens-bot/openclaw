@@ -129,16 +129,6 @@ it.each([
     deliveryMode: "gateway" as const,
   },
   {
-    cause: "message authority closes before required delivery pinning",
-    revokeAt: "pin" as const,
-    action: "send" as const,
-    retire: noteActiveCronJobMessageActionAuthorityMutation,
-    accepted: true,
-    partial: true,
-    laterError: "cron message action authority is no longer active",
-    deliveryMode: "direct" as const,
-  },
-  {
     cause: "message authority closes after the first multipart send",
     revokeAt: "multipart" as const,
     action: "send" as const,
@@ -226,7 +216,6 @@ it.each([
       const sends: string[] = [];
       const queueIds: Array<string | undefined> = [];
       const mutations: string[] = [];
-      const pins: string[] = [];
       const pollRequests: string[] = [];
       const providerConfigs: OpenClawConfig[] = [];
       const providerAccounts: Array<string | undefined> = [];
@@ -246,7 +235,7 @@ it.each([
             boundaryEntered.resolve();
             await releaseBoundary.promise;
           }
-          if ((revokeAt === "pin" || revokeAt === "multipart") && sends.length === 1) {
+          if (revokeAt === "multipart" && sends.length === 1) {
             boundaryEntered.resolve();
             await releaseBoundary.promise;
           }
@@ -342,10 +331,6 @@ it.each([
           sendPoll,
           chunker: revokeAt === "multipart" ? (text) => text.split(" ") : undefined,
           chunkerMode: revokeAt === "multipart" ? "text" : undefined,
-          pinDeliveredMessage: async ({ messageId, assertDirectAdapterHandoff }) => {
-            assertDirectAdapterHandoff?.();
-            pins.push(messageId);
-          },
         },
         directory: {
           listGroupsLive: listTargetsLive,
@@ -452,9 +437,6 @@ it.each([
               ...(revokeAt === "config" ? { accountId: "admitted" } : {}),
               target: revokeAt === "target" ? "alerts" : "channel:100000000000000001",
               message: revokeAt === "multipart" ? "first second" : message,
-              ...(revokeAt === "pin"
-                ? { delivery: { pin: { enabled: true, required: true } } }
-                : {}),
               ...(gatewayUrl ? { gatewayUrl } : {}),
             },
             source.signal,
@@ -539,7 +521,7 @@ it.each([
                   deliveryStatus: "partial_failed",
                   sentBeforeError: true,
                   result:
-                    revokeAt === "pin" || revokeAt === "multipart"
+                    revokeAt === "multipart"
                       ? { messageIds: ["message-1"] }
                       : {
                           messageId:
@@ -578,7 +560,6 @@ it.each([
       expect(sends).toEqual(Array.from({ length: sendAttempts }, () => "first"));
       expect(queueIds).toEqual(Array.from({ length: sendAttempts }, () => undefined));
       expect(mutations).toEqual(accepted && action === "set-presence" ? [action] : []);
-      expect(pins).toEqual([]);
       expect(pollRequests).toEqual(action === "poll" ? ["initial"] : []);
       if (revokeAt === "retry" || revokeAt === "multipart") {
         expect(await loadUnfinishedDeliveries(state.stateDir)).toEqual([]);

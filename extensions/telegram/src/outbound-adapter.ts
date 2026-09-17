@@ -544,14 +544,7 @@ export function createTelegramOutboundAdapter(
         },
       });
     },
-    pinDeliveredMessage: async ({
-      cfg,
-      target,
-      messageId,
-      pin,
-      gatewayClientScopes,
-      assertDirectAdapterHandoff,
-    }) => {
+    pinDeliveredMessage: async ({ cfg, target, messageId, pin, gatewayClientScopes }) => {
       const { pinMessageTelegram } = await loadSendModule();
       const outboundTo = normalizeTelegramOutboundTarget(target.to);
       const pinTarget = parseTelegramTarget(outboundTo);
@@ -561,7 +554,6 @@ export function createTelegramOutboundAdapter(
         notify: pin.notify,
         verbose: false,
         gatewayClientScopes,
-        assertPlatformSendAuthorized: assertDirectAdapterHandoff,
       });
     },
     resolveEffectiveTextChunkLimit: ({ cfg, accountId, formatting }) =>
