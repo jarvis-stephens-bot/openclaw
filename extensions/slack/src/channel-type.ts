@@ -106,11 +106,13 @@ export async function resolveSlackConversationInfo(params: {
       // Read-only classification stays on conversations.info. conversations.open is
       // write-scoped and must only run when the caller explicitly requests a write.
       if (isNativeImChannel && operation === "write") {
-        const client = createSlackWebClient(
-          token,
-          { teamId: params.teamId },
-          params.assertDirectAdapterHandoff,
-        );
+        const client = params.assertDirectAdapterHandoff
+          ? createSlackWebClient(
+              token,
+              { teamId: params.teamId },
+              params.assertDirectAdapterHandoff,
+            )
+          : createSlackWebClient(token, { teamId: params.teamId });
         const opened = await client.conversations.open({
           channel: channelId,
           prevent_creation: true,
@@ -126,12 +128,14 @@ export async function resolveSlackConversationInfo(params: {
         }
         return result;
       }
-      const client = createSlackReadClient(
-        token,
-        { teamId: params.teamId },
-        undefined,
-        params.assertDirectAdapterHandoff,
-      );
+      const client = params.assertDirectAdapterHandoff
+        ? createSlackReadClient(
+            token,
+            { teamId: params.teamId },
+            undefined,
+            params.assertDirectAdapterHandoff,
+          )
+        : createSlackReadClient(token, { teamId: params.teamId });
       const info = await client.conversations.info({ channel: channelId });
       const channel = info.channel as
         | { is_im?: boolean; is_mpim?: boolean; name?: string; user?: string }
