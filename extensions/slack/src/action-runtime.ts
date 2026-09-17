@@ -95,7 +95,6 @@ export const slackActionRuntime = {
     teamId?: string;
     operation?: "read" | "write";
     requireFreshName?: boolean;
-    assertDirectAdapterHandoff?: () => void;
   }) => (await loadSlackChannelTypeRuntime()).resolveSlackConversationInfo(params),
   resolveSlackChannelType: async (params: {
     cfg: OpenClawConfig;
@@ -127,7 +126,6 @@ export type SlackActionContext = {
   /** Allowed local media directories for file uploads. */
   mediaLocalRoots?: readonly string[];
   mediaReadFile?: (filePath: string) => Promise<Buffer>;
-  assertDirectAdapterHandoff?: ChannelMessageActionContext["assertDirectAdapterHandoff"];
   /** Slack-private ordered delivery plan prepared after presentation normalization. */
   preparedMessages?: readonly SlackReplyDeliveryMessage[];
 };
@@ -367,7 +365,6 @@ async function assertSlackReadTargetAllowed(params: {
       channelId: params.channelId,
       teamId: params.teamId,
       operation: "read",
-      assertDirectAdapterHandoff: params.context?.assertDirectAdapterHandoff,
     });
     if (
       info.type !== "dm" ||
@@ -404,7 +401,6 @@ async function assertSlackReadTargetAllowed(params: {
     teamId: params.teamId,
     operation: "read",
     ...(preliminary.shouldResolveName ? { requireFreshName: true } : {}),
-    assertDirectAdapterHandoff: params.context?.assertDirectAdapterHandoff,
   });
   if (
     preliminary.shouldResolveName &&
@@ -576,7 +572,6 @@ export async function handleSlackAction(
       ...(accountId ? { accountId } : {}),
       ...(tokenOverride ? { token: tokenOverride } : {}),
       teamId,
-      assertDirectAdapterHandoff: context?.assertDirectAdapterHandoff,
     };
   };
 

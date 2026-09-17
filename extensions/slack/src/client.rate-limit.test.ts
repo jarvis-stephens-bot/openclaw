@@ -2,11 +2,7 @@
 import { WebClient, type WebClientOptions } from "@slack/web-api";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import { describe, expect, it } from "vitest";
-import {
-  createSlackReadClient,
-  createSlackWriteClient,
-  resolveSlackWriteClientOptions,
-} from "./client.js";
+import { createSlackWriteClient, resolveSlackWriteClientOptions } from "./client.js";
 import { appendSlackStream, startSlackStream, stopSlackStream } from "./streaming.js";
 
 type StreamMethod = "chat.startStream" | "chat.appendStream" | "chat.stopStream";
@@ -215,64 +211,6 @@ describe("Slack explicit rate-limit recovery", () => {
       expect(new URLSearchParams(bodies[1]).get("team_id")).toBe("TWORKSPACE");
     },
   );
-
-  it("revalidates live action authority before a refused write is retried", async () => {
-    let authorized = true;
-    let attempts = 0;
-    const client = createSlackWriteClient(
-      "synthetic-live-authority-fixture",
-      {
-        fetch: async () => {
-          attempts += 1;
-          authorized = false;
-          return new Response("rate limited", {
-            status: 429,
-            headers: { "retry-after": "0" },
-          });
-        },
-      },
-      () => {
-        if (!authorized) {
-          throw new Error("scheduled message action authority is no longer active");
-        }
-      },
-    );
-
-    await expect(
-      client.apiCall("chat.postMessage", { channel: "CFIXTURE", text: "answer" }),
-    ).rejects.toThrow("scheduled message action authority is no longer active");
-    expect(attempts).toBe(1);
-  });
-
-  it("revalidates live action authority before a metadata read is retried", async () => {
-    let authorized = true;
-    let attempts = 0;
-    const client = createSlackReadClient(
-      "synthetic-live-read-authority-fixture",
-      {
-        fetch: async () => {
-          attempts += 1;
-          authorized = false;
-          return new Response("rate limited", {
-            status: 429,
-            headers: { "retry-after": "0" },
-          });
-        },
-        retryConfig: { retries: 1, minTimeout: 1, maxTimeout: 1 },
-      },
-      undefined,
-      () => {
-        if (!authorized) {
-          throw new Error("scheduled message action authority is no longer active");
-        }
-      },
-    );
-
-    await expect(client.conversations.info({ channel: "CFIXTURE" })).rejects.toThrow(
-      "scheduled message action authority is no longer active",
-    );
-    expect(attempts).toBe(1);
-  });
 
   it.each([
     { header: "0", calls: 3 },

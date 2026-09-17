@@ -243,9 +243,6 @@ async function prepareSlackOutboundSend(ctx: ChannelOutboundContext) {
       ...(params.onPlatformSendDispatch
         ? { onPlatformSendDispatch: params.onPlatformSendDispatch }
         : {}),
-      ...(params.assertDirectAdapterHandoff
-        ? { assertDirectAdapterHandoff: params.assertDirectAdapterHandoff }
-        : {}),
       ...(params.onDeliveryResult
         ? {
             onDeliveryResult: async (progress) => {

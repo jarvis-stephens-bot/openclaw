@@ -40,8 +40,7 @@ function resolveSlackActionContext(
     !ctx.mediaReadFile &&
     !ctx.conversationReadOrigin &&
     !ctx.requesterAccountId &&
-    !ctx.requesterSenderId &&
-    !ctx.assertDirectAdapterHandoff
+    !ctx.requesterSenderId
   ) {
     return undefined;
   }
@@ -55,7 +54,6 @@ function resolveSlackActionContext(
     conversationReadOrigin: ctx.conversationReadOrigin,
     requesterAccountId: ctx.requesterAccountId ?? undefined,
     requesterSenderId: ctx.requesterSenderId ?? undefined,
-    assertDirectAdapterHandoff: ctx.assertDirectAdapterHandoff,
   };
 }
 

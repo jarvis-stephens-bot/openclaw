@@ -12,7 +12,7 @@ import { SLACK_PRIVATE_ACTION_DELIVERY_RESULT } from "./action-threading.js";
 import type { SlackAuthoredTextPlacement } from "./authored-text.js";
 import { buildSlackBlocksFallbackText } from "./blocks-fallback.js";
 import { validateSlackBlocksArray } from "./blocks-input.js";
-import { createSlackLookupClient, createSlackWriteClient, getSlackWriteClient } from "./client.js";
+import { createSlackLookupClient, getSlackWriteClient } from "./client.js";
 import {
   openSlackConversationWithClient,
   parseSlackConversationOpenInput,
@@ -43,7 +43,6 @@ export type SlackActionClientOpts = {
   token?: string;
   teamId?: string;
   client?: WebClient;
-  assertDirectAdapterHandoff?: () => void;
 };
 
 export type SlackMessageSummary = {
@@ -222,7 +221,6 @@ function hasSlackPlatformError(err: unknown, code: string): boolean {
 
 async function getClient(opts: SlackActionClientOpts = {}, mode: "read" | "write" = "read") {
   if (opts.client) {
-    opts.assertDirectAdapterHandoff?.();
     return opts.client;
   }
   const accountId = opts.cfg
@@ -234,18 +232,9 @@ async function getClient(opts: SlackActionClientOpts = {}, mode: "read" | "write
   assertSlackDetachedTargetAllowed(accountId, opts.teamId);
   const token = resolveToken(opts.token, opts.accountId, opts.cfg);
   if (mode === "write") {
-    if (opts.assertDirectAdapterHandoff) {
-      return createSlackWriteClient(
-        token,
-        { teamId: opts.teamId },
-        opts.assertDirectAdapterHandoff,
-      );
-    }
     return getSlackWriteClient(token, { teamId: opts.teamId });
   }
-  return opts.assertDirectAdapterHandoff
-    ? createSlackLookupClient(token, { teamId: opts.teamId }, opts.assertDirectAdapterHandoff)
-    : createSlackLookupClient(token, { teamId: opts.teamId });
+  return createSlackLookupClient(token, { teamId: opts.teamId });
 }
 
 async function resolveBotUserId(client: WebClient) {
@@ -384,7 +373,6 @@ export async function sendSlackMessage(
     mediaLocalRoots: opts.mediaLocalRoots,
     mediaReadFile: opts.mediaReadFile,
     client: opts.client,
-    assertDirectAdapterHandoff: opts.assertDirectAdapterHandoff,
     threadTs: opts.threadTs,
     replyBroadcast: opts.replyBroadcast,
     ...(opts.textIsSlackMrkdwn ? { textIsSlackMrkdwn: true } : {}),
