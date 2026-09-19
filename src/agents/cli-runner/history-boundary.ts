@@ -13,6 +13,7 @@ import {
   resolveSessionTranscriptDatabasePath,
   validateSessionTranscriptContextAdmission,
   waitForSessionTranscriptProjection,
+  type SessionTranscriptRuntimeTarget,
 } from "../../config/sessions/session-accessor.js";
 import { resolveSessionTranscriptReadFence } from "../../config/sessions/session-transcript-read-fence.js";
 import { assertOwnedTranscriptWriteCommit } from "../../config/sessions/transcript-write-context.js";
@@ -45,6 +46,25 @@ export type CliHistoryBoundaryResult = {
   writer?: CliHistoryWriter;
   declined?: CliHistoryBoundaryDecline;
 };
+
+/**
+ * A transcript that a fresh start may safely reseed: no reconstructable conversation at
+ * all. Bookkeeping is not a conversation — retained reset rows, summaries, custom context,
+ * missing anchors and bounded cuts must never look empty, so a bounded scan that truncates
+ * is treated as non-empty. This is the ONLY thing that upgrades a no-writer state to
+ * reseedable, both when a boundary entry exists and when it is absent/mismatched.
+ */
+function isProvenEmptyTranscript(target: SessionTranscriptRuntimeTarget): boolean {
+  let truncated = false;
+  const branch = SessionManager.openBounded(target, {
+    maxBytes: 1024 * 1024,
+    maxEvents: 100,
+    onTruncated: () => {
+      truncated = true;
+    },
+  }).getBranch();
+  return !truncated && buildSessionContext(branch).messages.length === 0;
+}
 
 /**
  * History belongs to the local transcript, not the latest native handle. Cover only
@@ -84,7 +104,19 @@ export async function prepareCliHistoryBoundary(
   assertCurrent();
   const snapshot: InternalSessionEntry | undefined = loadSessionEntryReadOnly(target);
   if (!snapshot || snapshot.sessionId !== target.sessionId) {
-    return { declined: declinedEarly };
+    // We already passed the same-session checks, so a real transcript target exists — its
+    // boundary entry is merely absent or mismatched (pruned/reset while events remain, or a
+    // projection race). No writer can be established without that entry, but classification
+    // must NOT default to `declinedEarly`: reseeding here would replay durable history whose
+    // ownership was never verified. Master refused this outright; we relax it only for a
+    // proven-empty start (nothing to leak), exactly the bar the downstream `allowed` logic
+    // uses. A snapshotless transcript that still holds content stays refused.
+    const provenEmptyStart =
+      !borrowed &&
+      !params.cliSessionId &&
+      !params.cliSessionBinding &&
+      isProvenEmptyTranscript(target);
+    return { declined: provenEmptyStart ? "fresh" : "refused" };
   }
   const watermark = readSessionTranscriptWatermark(target);
   const admission = resolveSessionTranscriptReadFence(target);
@@ -138,17 +170,7 @@ export async function prepareCliHistoryBoundary(
     !params.cliSessionId &&
     !params.cliSessionBinding
   ) {
-    let truncated = false;
-    const branch = SessionManager.openBounded(target, {
-      maxBytes: 1024 * 1024,
-      maxEvents: 100,
-      onTruncated: () => {
-        truncated = true;
-      },
-    }).getBranch();
-    // Bookkeeping is not a conversation. Retained reset rows, summaries, custom
-    // context, missing anchors and bounded cuts must never look like a fresh start.
-    allowed = !truncated && buildSessionContext(branch).messages.length === 0;
+    allowed = isProvenEmptyTranscript(target);
   }
   allowed &&= watermark.maxSeq === null || typeof watermark.generation === "string";
   // Classify why a writer could not be established, so the caller reseeds a genuinely

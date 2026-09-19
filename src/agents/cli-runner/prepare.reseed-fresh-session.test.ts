@@ -1,11 +1,17 @@
 // Extracted sibling of prepare.test.ts (kept separate to respect the per-file line
-// cap). Covers the fresh-session reseed boundary: a genuinely session-less turn under
-// stable auth must reseed prior transcript context like a missing transcript, while an
-// account transition (a transcript owned by a different credential) must stay refused.
+// cap). Covers the fresh-session reseed boundary end to end — the authority-chain proof
+// that the revised owner admits covered same-account context while rejecting foreign,
+// uncovered, and snapshotless history before final CLI input: a genuinely session-less
+// turn under stable auth reseeds prior transcript context like a missing transcript,
+// while an account transition (a transcript owned by a different credential) and a
+// missing/mismatched boundary snapshot over uncovered content both stay refused.
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { makeUserMessage } from "../../../test/helpers/user-message.js";
-import { patchSessionEntryCore } from "../../config/sessions/session-accessor.js";
+import {
+  patchSessionEntryCore,
+  replaceSessionEntrySync,
+} from "../../config/sessions/session-accessor.js";
 import { prepareSystemAgentRunAdmission } from "../admitted-run-context.js";
 import { saveAuthProfileStore } from "../auth-profiles/store-runtime.js";
 import { testing as cliBackendsTesting } from "../cli-backends.test-support.js";
@@ -139,5 +145,62 @@ describe("CLI fresh session-less reseed boundary", () => {
 
     expect(context.cliHistoryWriter).toBeUndefined();
     expect(context.openClawHistoryPrompt).toBeUndefined();
+  });
+
+  it("refuses reseed when the boundary snapshot is missing but uncovered content remains", async () => {
+    const prepare = await establishOwnedAuth();
+    const { sessionTarget } = fixture.session;
+    fixture.appendTranscript({
+      id: "msg-1",
+      parentId: null,
+      timestamp: new Date(1).toISOString(),
+      message: makeUserMessage("prior uncovered ask", 1),
+    });
+    // Drop the boundary entry to a mismatched session id while the transcript content
+    // survives — an entry pruned/reset or a projection race. This is exactly the early
+    // return where `loadSessionEntryReadOnly` yields no matching snapshot AFTER the
+    // same-session checks passed. Ownership was never verified, so the content must NOT
+    // be replayed; master refused it, and reseeding it would leak uncovered history.
+    replaceSessionEntrySync(sessionTarget, { sessionId: "mismatched-session", updatedAt: 0 });
+
+    const context = await prepare();
+
+    expect(context.cliHistoryWriter).toBeUndefined();
+    expect(context.openClawHistoryPrompt).toBeUndefined();
+  });
+
+  it("classifies a snapshotless but proven-empty transcript as a fresh start", async () => {
+    const { dir, sessionTarget } = fixture.session;
+    const agentDir = path.join(dir, "agents", "main", "agent");
+    const credential = { type: "token" as const, provider: "test-cli", token: "stable-account" };
+    const runId = "snapshotless-empty";
+    const admission = prepareSystemAgentRunAdmission({}, runId, "main", "snapshotless-empty");
+    cleanups.push(() => admission.close());
+    const admittedRunContext = await admission.admit("embedded");
+    // Mismatched boundary snapshot, but no transcript content beyond the session header:
+    // there is nothing to leak, so the missing-snapshot early return must still classify
+    // this genuinely session-less turn as "fresh" (reseedable) rather than over-refusing.
+    replaceSessionEntrySync(sessionTarget, { sessionId: "mismatched-session", updatedAt: 0 });
+
+    const result = await prepareCliHistoryBoundary(
+      {
+        admittedRunContext,
+        runId,
+        agentDir,
+        provider: "test-cli",
+        model: "test-model",
+        prompt: "hi",
+        workspaceDir: dir,
+        timeoutMs: 1000,
+        sessionId: sessionTarget.sessionId,
+        sessionKey: sessionTarget.sessionKey,
+        sessionFile: sessionTarget.sessionKey,
+        sessionTarget,
+      },
+      { credential },
+    );
+
+    expect(result.writer).toBeUndefined();
+    expect(result.declined).toBe("fresh");
   });
 });
