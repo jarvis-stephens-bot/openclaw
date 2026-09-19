@@ -34,7 +34,7 @@ import type { PreparedCliRunContext } from "./types.js";
  * owned transcript exists but belongs to a *different* account fingerprint; reseeding
  * it would leak one account's context into another's prompt, so it must stay refused.
  */
-export type CliHistoryBoundaryDecline = "fresh" | "account-transition";
+type CliHistoryBoundaryDecline = "fresh" | "account-transition";
 
 /**
  * Discriminated result: `writer` present on success, otherwise `declined` says why so
