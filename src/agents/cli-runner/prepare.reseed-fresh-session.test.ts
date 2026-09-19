@@ -139,7 +139,7 @@ describe("CLI fresh session-less reseed boundary", () => {
     // Advance the transcript THROUGH the owned writer, so its coverage proof stays
     // contiguous. This is genuine same-account recovery — the writer re-establishes and the
     // prior content reaches what execute.ts sends as the CLI prompt.
-    await owned.appendCovered("prior covered ask");
+    owned.appendCovered("prior covered ask");
 
     const context = await owned.prepare();
 
@@ -170,7 +170,7 @@ describe("CLI fresh session-less reseed boundary", () => {
 
   it("rejects a coverage invalidation between preparation and the dispatch read guard", async () => {
     const owned = await establishOwnedAuth();
-    await owned.appendCovered("prior covered ask");
+    owned.appendCovered("prior covered ask");
     const context = await owned.prepare();
     // Covered recovery hands back a live writer; execute.ts binds its assertReadable as the
     // per-turn assertCurrent, so the coverage proof is re-verified at the final CLI read.
