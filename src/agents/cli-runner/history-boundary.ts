@@ -28,6 +28,25 @@ import { createCliRunCurrentAssertion } from "./execution-target.js";
 import type { PreparedCliRunContext } from "./types.js";
 
 /**
+ * Why history preparation declined to hand back a writer. `"fresh"` means no prior
+ * transcript is owned by the current credential — a genuinely session-less start
+ * that is safe to reseed like a missing transcript. `"account-transition"` means an
+ * owned transcript exists but belongs to a *different* account fingerprint; reseeding
+ * it would leak one account's context into another's prompt, so it must stay refused.
+ */
+export type CliHistoryBoundaryDecline = "fresh" | "account-transition";
+
+/**
+ * Discriminated result: `writer` present on success, otherwise `declined` says why so
+ * the caller can reseed a fresh start while still refusing an account boundary. The two
+ * were previously collapsed into one `undefined`, which reseeded borrowed history.
+ */
+export type CliHistoryBoundaryResult = {
+  writer?: CliHistoryWriter;
+  declined?: CliHistoryBoundaryDecline;
+};
+
+/**
  * History belongs to the local transcript, not the latest native handle. Cover only
  * a proven-empty start or the contiguous events of the previously admitted CLI run.
  * An account transition, old-runtime write, import or unknown legacy prefix stays
@@ -36,7 +55,7 @@ import type { PreparedCliRunContext } from "./types.js";
 export async function prepareCliHistoryBoundary(
   params: PreparedCliRunContext["params"],
   identity: { credential?: AuthProfileCredential },
-): Promise<CliHistoryWriter | undefined> {
+): Promise<CliHistoryBoundaryResult> {
   const source = params.sessionTarget;
   if (
     params.sessionManager ||
@@ -45,7 +64,7 @@ export async function prepareCliHistoryBoundary(
     (params.sessionKey !== undefined && params.sessionKey !== source.sessionKey) ||
     !resolveAdmittedRunActiveAssertion(params.admittedRunContext, params.abortSignal)
   ) {
-    return undefined;
+    return { declined: "fresh" };
   }
   const target = { ...source, storePath: resolveSessionTranscriptDatabasePath(source) };
   const assertCurrent = createCliRunCurrentAssertion(params);
@@ -53,7 +72,7 @@ export async function prepareCliHistoryBoundary(
   assertCurrent();
   const snapshot: InternalSessionEntry | undefined = loadSessionEntryReadOnly(target);
   if (!snapshot || snapshot.sessionId !== target.sessionId) {
-    return undefined;
+    return { declined: "fresh" };
   }
   const watermark = readSessionTranscriptWatermark(target);
   const admission = resolveSessionTranscriptReadFence(target);
@@ -120,8 +139,15 @@ export async function prepareCliHistoryBoundary(
     allowed = !truncated && buildSessionContext(branch).messages.length === 0;
   }
   allowed &&= watermark.maxSeq === null || typeof watermark.generation === "string";
+  // A stored *known* boundary under a different (or unknown) owner fingerprint is an
+  // account transition; anything else with no owned prior is a fresh start. This is the
+  // single fact that separates "safe to reseed" from "must refuse the borrowed history".
+  const declined: CliHistoryBoundaryDecline =
+    isKnownCliHistoryBoundary(stored) && stored.authFingerprint !== fingerprint
+      ? "account-transition"
+      : "fresh";
   if (!allowed && !stored) {
-    return undefined;
+    return { declined };
   }
   const boundary: CliHistoryBoundary =
     allowed && fingerprint
@@ -166,7 +192,7 @@ export async function prepareCliHistoryBoundary(
     },
   );
   if (!committed || !allowed || boundary.state !== "known") {
-    return undefined;
+    return { declined };
   }
   const assertActive = resolveAdmittedRunActiveAssertion(params.admittedRunContext);
   const assertWriterCurrent = () => {
@@ -211,5 +237,5 @@ export async function prepareCliHistoryBoundary(
   bindAgentRunTerminalWriteContext(authority, {
     run: (write) => runWithCliHistoryWriter(writer, write),
   });
-  return writer;
+  return { writer };
 }

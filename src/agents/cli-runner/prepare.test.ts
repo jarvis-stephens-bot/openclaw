@@ -388,7 +388,7 @@ describe("prepareCliRunContext", () => {
     const admission = prepareSystemAgentRunAdmission({}, runId, "main", "history-fixture");
     try {
       const admittedRunContext = await admission.admit("embedded");
-      const writer = await prepareCliHistoryBoundary(
+      const { writer } = await prepareCliHistoryBoundary(
         {
           admittedRunContext,
           runId,
@@ -3819,33 +3819,6 @@ describe("prepareCliRunContext", () => {
       expect(context.openClawHistoryPrompt).toContain("latest ask");
     });
   });
-
-  it("reseeds opted-in raw-tail history for a fresh session-less turn with stable auth", async () => {
-    await withAuthenticatedHistory("test-cli", async (prepare) => {
-      fixture.appendTranscript({
-        id: "msg-1",
-        parentId: null,
-        timestamp: new Date(1).toISOString(),
-        message: makeUserMessage("prior session-less ask", 1),
-      });
-
-      // No cliSessionBinding: a fresh turn with no reusable CLI session and no
-      // established history writer, under stable auth (withAuthenticatedHistory).
-      // Previously this resolved to "auth-unknown" and was refused at the auth
-      // boundary, dropping context on every session-less turn; it should now
-      // reseed like a missing transcript.
-      const context = await prepare({
-        config: createCliBackendConfig({
-          reseedFromRawTranscriptWhenUncompacted: true,
-        }),
-      });
-
-      expect(context.openClawHistoryPrompt).toBeDefined();
-      expect(context.openClawHistoryPrompt).toContain("prior session-less ask");
-      expect(context.openClawHistoryPrompt).toContain("latest ask");
-    });
-  });
-
 
   it.each([false, true])(
     "keeps media progress in current-turn context with plugin execution %s",

@@ -2060,25 +2060,19 @@ async function prepareCliRunContextWithinReadFence(
       backendResolved.config.reseedFromRawTranscriptWhenUncompacted === true;
     const historyParams = await admitPreparedParams(params);
     params = historyParams;
-    const cliHistoryWriter = !isSideQuestion
+    const { writer: cliHistoryWriter, declined: historyDeclined } = !isSideQuestion
       ? await prepareCliHistoryBoundary(historyParams, { credential: authCredential })
-      : undefined;
+      : {};
     // Explicit caller-owned memory remains input; it cannot authorize borrowed durable history.
-    const historyAllowed = params.sessionManager !== undefined || cliHistoryWriter !== undefined;
-    // Native compatibility and transcript account ownership are independent gates.
-    // When history ownership is unestablished we must not blindly refuse the
-    // transcript: a genuine auth change (auth-profile / auth-epoch invalidation)
-    // is a real account boundary and stays refused, but a *fresh* session that
-    // never established a writer is not an identity change — it should reseed
-    // like a missing transcript. Emitting "auth-unknown" for the fresh-session
-    // case discards context on every session-less turn even when auth is stable.
-    const rawTranscriptReseedReason = !historyAllowed
-      ? invalidatedReason === "auth-profile" || invalidatedReason === "auth-epoch"
-        ? invalidatedReason
-        : (ignoreCliSessionCandidate ? undefined : "missing-transcript")
-      : reusableCliSessionId
-        ? "session-expired"
-        : (invalidatedReason ?? (ignoreCliSessionCandidate ? undefined : "missing-transcript"));
+    // Only an account transition (an owned transcript under a different fingerprint) is a real
+    // identity boundary that must refuse. A fresh session-less turn under stable auth reseeds
+    // like a missing transcript; a writer that IS established never sets `declined` at all.
+    const rawTranscriptReseedReason =
+      historyDeclined === "account-transition"
+        ? "auth-unknown"
+        : reusableCliSessionId
+          ? "session-expired"
+          : (invalidatedReason ?? (ignoreCliSessionCandidate ? undefined : "missing-transcript"));
     const sessionPromptContext =
       skipsTurnPreparation || params.isolatedCompletion
         ? undefined
