@@ -126,7 +126,9 @@ afterAll(async () => {
   await workspaceSuite.cleanup();
 });
 
-afterEach(() => {
+afterEach(async () => {
+  // skills.status acquires real watchers; retire them before another suite borrows the worker.
+  await closeSkillsWatchers(true);
   vi.restoreAllMocks();
 });
 

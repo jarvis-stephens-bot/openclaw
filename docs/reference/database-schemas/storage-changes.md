@@ -47,8 +47,9 @@ separately without discarding that outcome or replaying the write. Incomplete
 result delivery retains its existing unknown-outcome handling. Final publication
 and follower dispatch run after synchronous native wait servicing returns.
 Preparation refusals retain that port through terminal cleanup replies too.
-The shared-state owner retires the exact unavailable actor after its accepted
-callbacks finish, so the next call opens a usable actor without retrying the prior write.
+The shared-state owner retires the exact unavailable actor after accepted callbacks
+finish across all clients sharing it, so the next call opens a usable actor without
+retrying the prior write.
 Nested callbacks return their completed outcomes while further commands on the
 failed actor refuse without waiting for the enclosing callback to close itself.
 Retirement cleanup failures retain canonical retry custody and report separately
@@ -181,8 +182,11 @@ iMessage outbound receipt recovery reads the external Messages SQLite database
 through the shared worker broker. Its plugin owns the read-only GUID queries;
 each recovery operation retains its read-only connection through polling and
 joins worker cleanup before the send publishes its receipt. Numeric message IDs and the latest matching sent message keep their existing recovery
-rules, including the five-second polling deadline. This does not migrate
-iMessage's startup watermark or conversation-binding queries.
+rules, including the five-second polling deadline. The same plugin-owned worker
+reads iMessage's local startup watermark and finishes cleanup before the transport
+probe and watch subscription. Empty databases retain the pre-first-row cursor;
+unavailable databases retain the existing fallback. Conversation-binding queries
+remain separate migration work.
 
 iMessage persisted echo reads, writes, and failed-send cleanup use the plugin-state
 worker. Sends await provisional echo persistence before transport and cleanup
@@ -947,6 +951,12 @@ and refresh-lock cleanup before releasing custody. Atomic pruning retains all
 obsolete-row comparison bytes on the host until its transaction settles; bounded
 SQL batches do not impose an aggregate memory limit. Cache formats, schemas,
 retention, and update behavior are unchanged.
+
+Shared-state database drainage also joins resources registered while an earlier
+resource is closing. Native retirement waits for those resources; failed cleanup
+remains owned for a later explicit retry.
+Maintenance cleanup joins work started by earlier cleanup phases before closing
+the resources it uses. Clients adopted by actor retirement share its cleanup result.
 
 Memory managers admit writes on their exact borrowed agent connection. Provider
 calls and source preparation run before admission; generated-cache and source

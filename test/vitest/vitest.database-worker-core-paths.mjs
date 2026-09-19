@@ -176,6 +176,7 @@ export const databaseWorkerCoreTestFiles = [
   "src/plugin-sdk/provider-auth.test.ts",
   "src/plugin-sdk/provider-auth-copilot-cache.test.ts",
   "src/plugins/doctor-contract-registry.load-paths.test.ts",
+  "src/skills/lifecycle/upload-store.test.ts",
   "src/state/openclaw-memory-write-admission.test.ts",
   "src/state/openclaw-state-db.test.ts",
   "src/state/openclaw-state-db-read-admission.test.ts",

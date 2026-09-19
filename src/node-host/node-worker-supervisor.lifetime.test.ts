@@ -33,6 +33,7 @@ import {
   testWorkerLaunchInput,
 } from "./node-worker-supervisor.test-support.js";
 import { NodeWorkerTurnStore } from "./node-worker-turn-store.js";
+import { NodeWorkerWorkspaceProcesses } from "./node-worker-workspace-processes.js";
 
 type NodeWorkerSupervisor = ReturnType<typeof createNodeWorkerSupervisor>;
 
@@ -611,10 +612,19 @@ describe("node worker environment lifetime", () => {
     },
   );
 
-  it.each(["environment stop", "supervisor close"] as const)(
-    "%s aborts admission behind a stalled retiring worker",
-    async (operation) => {
-      const { env, supervisor, workspaceDir } = fixture({ capacity: 2 });
+  it.each([
+    { operation: "environment stop", workspaceFailure: false },
+    { operation: "supervisor close", workspaceFailure: false },
+    { operation: "environment stop", workspaceFailure: true },
+    { operation: "supervisor close", workspaceFailure: true },
+  ] as const)(
+    "$operation aborts stalled admission and retires workers with workspaceFailure=$workspaceFailure",
+    async ({ operation, workspaceFailure }) => {
+      const capacitySnapshots: Array<{ total: number; available: number }> = [];
+      const { env, supervisor, workspaceDir } = fixture({
+        capacity: 2,
+        onCapacityChanged: (capacity) => capacitySnapshots.push(capacity),
+      });
       const first = testWorkerLaunchInput(workspaceDir, "retiring-owner", "retire-stall");
       const next = testWorkerLaunchInput(workspaceDir, "waiting-for-retirement", "wait");
       const sibling = launchInput(workspaceDir, "outside-retiring-environment", "wait");
@@ -625,6 +635,9 @@ describe("node worker environment lifetime", () => {
       let admissionError: unknown;
       let shutdownError: unknown;
       let stopped = false;
+      const cleanupError = workspaceFailure
+        ? new Error("workspace process cleanup failed")
+        : undefined;
       try {
         owner = await supervisor.launch(first, TEST_WORKER_ENDPOINT);
         const completed = await waitForTerminal(supervisor, first.launchId);
@@ -638,6 +651,12 @@ describe("node worker environment lifetime", () => {
         });
         await vi.waitFor(() => expect(readOwner).toHaveBeenCalledWith(first.launchId));
         readOwner.mockRestore();
+        if (cleanupError) {
+          vi.spyOn(
+            NodeWorkerWorkspaceProcesses.prototype,
+            operation === "environment stop" ? "stopEnvironment" : "close",
+          ).mockRejectedValueOnce(cleanupError);
+        }
         const stopping =
           operation === "environment stop"
             ? supervisor.stopEnvironment(testNodeWorkerEnvironmentIdentity(first))
@@ -648,6 +667,7 @@ describe("node worker environment lifetime", () => {
           },
           (error: unknown) => {
             shutdownError = error;
+            stopped = true;
           },
         );
 
@@ -659,9 +679,9 @@ describe("node worker environment lifetime", () => {
                   ? "node worker environment stopped"
                   : "node worker supervisor is closed",
             });
-            expect(shutdownError).toBeUndefined();
+            expect(shutdownError).toBe(cleanupError);
             expect(stopped).toBe(true);
-            expect(inspectNodeWorkerProcessIdentity(owner!.worker!)).not.toBe("live");
+            expect(inspectNodeWorkerProcessIdentity(owner!.worker!)).toMatch(/^(dead|reused)$/u);
           },
           { timeout: 3_000 },
         );
@@ -673,22 +693,23 @@ describe("node worker environment lifetime", () => {
         expect(await supervisor.status(next.launchId)).toBeUndefined();
         expect(fs.existsSync(path.join(workspaceDir, `${next.launchId}.started.json`))).toBe(false);
         if (operation === "environment stop") {
+          expect(capacitySnapshots.at(-1)).toEqual({ total: 2, available: 1 });
           expect(inspectNodeWorkerProcessIdentity(unrelated.worker!)).toBe("live");
           expect(await supervisor.status(sibling.launchId)).toMatchObject({ state: "running" });
           await expect(supervisor.launch(next, TEST_WORKER_ENDPOINT)).resolves.toMatchObject({
             state: "running",
           });
         } else {
+          expect(capacitySnapshots.at(-1)).toEqual({ total: 2, available: 2 });
           expect(inspectNodeWorkerProcessIdentity(unrelated.worker!)).not.toBe("live");
           expect(store.listNonterminal()).toEqual([]);
         }
       } finally {
-        // Break the injected retirement stall even when the pre-fix admission never aborts.
-        if (owner?.worker && inspectNodeWorkerProcessIdentity(owner.worker) === "live") {
-          process.kill(owner.worker.pid, "SIGKILL");
+        try {
+          await supervisor.close();
+        } finally {
+          await Promise.allSettled([admission, shutdown]);
         }
-        await Promise.allSettled([admission, shutdown]);
-        await supervisor.close();
       }
     },
   );

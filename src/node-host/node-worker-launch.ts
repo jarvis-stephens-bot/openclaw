@@ -35,6 +35,8 @@ import {
 import { nodeWorkerDescriptorSecrets } from "./node-worker-turn-lifecycle.js";
 import type { NodeWorkerTurnStore } from "./node-worker-turn-store.js";
 
+export const NODE_WORKER_STOP_GRACE_MS = 1_000;
+
 type NodeWorkerLaunchContext = {
   bundleRoot: string;
   workerEnv: NodeJS.ProcessEnv;
@@ -45,7 +47,6 @@ type NodeWorkerLaunchContext = {
   containerEngine?: NodeWorkerContainerEngine;
   containerImage?: string;
   containerLifecycle?: NodeWorkerContainerLifecycle;
-  requireContainerLifecycle: () => NodeWorkerContainerLifecycle;
   active: Map<string, NodeWorkerActiveOwnership>;
   isClosed: () => boolean;
   observeChild: (active: NodeWorkerRunningChild) => Promise<void>;
@@ -113,7 +114,10 @@ export async function startNodeWorkerChild(
   }
   if (!adapter.pid) {
     if (container) {
-      await context.requireContainerLifecycle().remove(container, params.input);
+      await requireNodeWorkerContainerLifecycle(context.containerLifecycle).remove(
+        container,
+        params.input,
+      );
     }
     adapter.kill("SIGKILL");
     adapter.dispose();
@@ -124,7 +128,10 @@ export async function startNodeWorkerChild(
     worker = requireNodeWorkerProcessIdentity(adapter.pid);
   } catch (error) {
     if (container) {
-      await context.requireContainerLifecycle().remove(container, params.input);
+      await requireNodeWorkerContainerLifecycle(context.containerLifecycle).remove(
+        container,
+        params.input,
+      );
     }
     adapter.kill("SIGKILL");
     await adapter.wait().catch(() => undefined);
@@ -223,4 +230,51 @@ export async function startNodeWorkerChild(
     return context.store.get(active.launchId) ?? running;
   }
   return context.turns.get(params.input.launchId) ?? running;
+}
+
+export function requireNodeWorkerContainerLifecycle(
+  lifecycle?: NodeWorkerContainerLifecycle,
+): NodeWorkerContainerLifecycle {
+  if (!lifecycle) {
+    throw new Error("node worker container isolation has no available engine");
+  }
+  return lifecycle;
+}
+
+export async function cleanupNodeWorkerChildContainer(
+  active: NodeWorkerRunningChild,
+  lifecycle?: NodeWorkerContainerLifecycle,
+): Promise<void> {
+  if (!active.container) {
+    return;
+  }
+  const cleanup = (active.containerCleanup ??= requireNodeWorkerContainerLifecycle(lifecycle)
+    .remove(active.container, active)
+    .finally(() => {
+      if (active.containerCleanup === cleanup) {
+        active.containerCleanup = undefined;
+      }
+    }));
+  await cleanup;
+}
+
+export async function stopNodeWorkerChild(
+  active: NodeWorkerRunningChild,
+  state: NodeWorkerStopState | undefined,
+  lifecycle?: NodeWorkerContainerLifecycle,
+): Promise<void> {
+  active.stopState ??= state;
+  if (active.container) {
+    // The attach client owns no workload; fence the container and prove its
+    // removal before its launch can become terminal or release capacity.
+    await cleanupNodeWorkerChildContainer(active, lifecycle);
+  }
+  active.adapter.kill("SIGTERM");
+  const forceKill = setTimeout(() => active.adapter.kill("SIGKILL"), NODE_WORKER_STOP_GRACE_MS);
+  forceKill.unref?.();
+  try {
+    await active.done;
+  } finally {
+    clearTimeout(forceKill);
+  }
 }

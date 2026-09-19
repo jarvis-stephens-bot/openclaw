@@ -36,6 +36,7 @@ export function createNodeWorkerLaunchRecovery(
     receipt: NodeWorkerLaunchReceipt,
     notifyCapacity = true,
     state?: NodeWorkerStopState,
+    awaitCleanup = false,
   ): Promise<NodeWorkerLaunchReceipt> => {
     const params = { ...context, receipt, notifyCapacity, state };
     if (
@@ -78,6 +79,9 @@ export function createNodeWorkerLaunchRecovery(
       if (state === "cancelled") {
         recovery.params.state = state;
       }
+    }
+    if (awaitCleanup) {
+      return await recovery.done;
     }
     let timer: NodeJS.Timeout | undefined;
     try {

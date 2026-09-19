@@ -99,3 +99,19 @@ export async function waitForOwnedNodeWorkerTreeDeath(
   }
   return state;
 }
+
+export async function stopOwnedNodeWorkerTree(
+  worker: NodeWorkerProcessIdentity,
+  graceMs: number,
+  forceWaitMs: number,
+): Promise<void> {
+  let treeState = inspectOwnedNodeWorkerTree(worker);
+  if (treeState === "live") {
+    await signalOwnedNodeWorkerTree(worker, "SIGTERM");
+    treeState = await waitForOwnedNodeWorkerTreeDeath(worker, graceMs);
+  }
+  if (treeState === "live") {
+    await signalOwnedNodeWorkerTree(worker, "SIGKILL");
+    await waitForOwnedNodeWorkerTreeDeath(worker, forceWaitMs);
+  }
+}
