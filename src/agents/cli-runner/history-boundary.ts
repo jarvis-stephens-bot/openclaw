@@ -178,17 +178,18 @@ export async function prepareCliHistoryBoundary(
   }
   allowed &&= watermark.maxSeq === null || typeof watermark.generation === "string";
   // Classify why a writer could not be established, so the caller reseeds a genuinely
-  // fresh start but refuses borrowed history. A prior boundary owned by the current
-  // fingerprint is the current account's own history (safe to reseed like a missing
-  // transcript); a boundary owned by a different fingerprint, or an untrusted
-  // "unknown"-state boundary, is an account transition that must stay refused. With no
-  // prior boundary at all, ownership cannot be proven from a fingerprint alone (there is
-  // no boundary to match it against), so only a session-less turn whose transcript is
-  // proven empty is fresh — uncovered content or a revoked/absent credential stays refused,
-  // exactly as master did. A borrowed native handle never authorizes unverified history.
-  const ownedByCurrent =
-    isKnownCliHistoryBoundary(stored) && stored.authFingerprint === fingerprint;
-  const isFreshStart = stored ? ownedByCurrent : isProvenEmptyStart();
+  // fresh start but refuses borrowed history. Reseed is exactly `allowed`: contiguous
+  // coverage of the current account's own history (`allowed` already required the matching
+  // fingerprint, generation and maxSeq), or a proven-empty start that the upgrade above
+  // promoted. A fingerprint match is NOT enough on its own — a stored boundary whose
+  // coverage went stale (an unrecorded append or a transcript rewrite made `allowed` false)
+  // owns the account but no longer covers the live rows, so reseeding it would replay
+  // uncovered durable history; it must refuse and persist an unknown boundary. With no
+  // prior boundary at all, ownership cannot be proven from a fingerprint alone, so only a
+  // proven-empty session-less turn is fresh — uncovered content, a revoked/absent
+  // credential, or a foreign account stays refused, exactly as master did. A borrowed
+  // native handle never authorizes unverified history.
+  const isFreshStart = stored ? allowed : isProvenEmptyStart();
   const declined: CliHistoryBoundaryDecline = isFreshStart ? "fresh" : "refused";
   if (!allowed && !stored) {
     return { declined };
