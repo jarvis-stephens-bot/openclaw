@@ -2064,11 +2064,11 @@ async function prepareCliRunContextWithinReadFence(
       ? await prepareCliHistoryBoundary(historyParams, { credential: authCredential })
       : {};
     // Explicit caller-owned memory remains input; it cannot authorize borrowed durable history.
-    // Only an account transition (an owned transcript under a different fingerprint) is a real
-    // identity boundary that must refuse. A fresh session-less turn under stable auth reseeds
-    // like a missing transcript; a writer that IS established never sets `declined` at all.
+    // A non-fresh decline (borrowed native handle, account transition, or untrusted boundary)
+    // must refuse. A fresh session-less turn under stable auth reseeds like a missing
+    // transcript; a writer that IS established never sets `declined` at all.
     const rawTranscriptReseedReason =
-      historyDeclined === "account-transition"
+      historyDeclined === "refused"
         ? "auth-unknown"
         : reusableCliSessionId
           ? "session-expired"

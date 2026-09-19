@@ -28,13 +28,13 @@ import { createCliRunCurrentAssertion } from "./execution-target.js";
 import type { PreparedCliRunContext } from "./types.js";
 
 /**
- * Why history preparation declined to hand back a writer. `"fresh"` means no prior
- * transcript is owned by the current credential — a genuinely session-less start
- * that is safe to reseed like a missing transcript. `"account-transition"` means an
- * owned transcript exists but belongs to a *different* account fingerprint; reseeding
- * it would leak one account's context into another's prompt, so it must stay refused.
+ * Why history preparation declined to hand back a writer. `"fresh"` means a genuinely
+ * session-less start with no borrowed native handle and no prior transcript owned by a
+ * different credential — safe to reseed like a missing transcript. `"refused"` covers
+ * every non-fresh decline (a reused/forced native session, an account transition, or an
+ * untrusted boundary); reseeding then would leak borrowed history, so it stays refused.
  */
-type CliHistoryBoundaryDecline = "fresh" | "account-transition";
+type CliHistoryBoundaryDecline = "fresh" | "refused";
 
 /**
  * Discriminated result: `writer` present on success, otherwise `declined` says why so
@@ -139,13 +139,17 @@ export async function prepareCliHistoryBoundary(
     allowed = !truncated && buildSessionContext(branch).messages.length === 0;
   }
   allowed &&= watermark.maxSeq === null || typeof watermark.generation === "string";
-  // A stored *known* boundary under a different (or unknown) owner fingerprint is an
-  // account transition; anything else with no owned prior is a fresh start. This is the
-  // single fact that separates "safe to reseed" from "must refuse the borrowed history".
-  const declined: CliHistoryBoundaryDecline =
-    isKnownCliHistoryBoundary(stored) && stored.authFingerprint !== fingerprint
-      ? "account-transition"
-      : "fresh";
+  // Classify why a writer could not be established, so the caller reseeds a genuinely
+  // fresh start but refuses borrowed history. A prior boundary owned by the current
+  // fingerprint is the current account's own history (safe to reseed like a missing
+  // transcript); a boundary owned by a different fingerprint, or an untrusted
+  // "unknown"-state boundary, is an account transition that must stay refused. With no
+  // prior boundary at all, only a session-less turn (no reused/forced native handle) is
+  // fresh — a borrowed native handle cannot authorize unverified durable history.
+  const ownedByCurrent =
+    isKnownCliHistoryBoundary(stored) && stored.authFingerprint === fingerprint;
+  const isFreshStart = stored ? ownedByCurrent : !params.cliSessionId && !params.cliSessionBinding;
+  const declined: CliHistoryBoundaryDecline = isFreshStart ? "fresh" : "refused";
   if (!allowed && !stored) {
     return { declined };
   }
