@@ -57,6 +57,18 @@ export async function prepareCliHistoryBoundary(
   identity: { credential?: AuthProfileCredential },
 ): Promise<CliHistoryBoundaryResult> {
   const source = params.sessionTarget;
+  // A source under a *different* session identity, or a borrowed/forced native handle, is
+  // not this run's own history: it must never reseed. Explicit caller memory (sessionManager)
+  // and a genuinely session-less turn (no transcript to leak) may reseed like a missing
+  // transcript. This decides every early "cannot establish a writer" exit below.
+  const borrowed =
+    (source !== undefined &&
+      (source.sessionId !== params.sessionId ||
+        (params.sessionKey !== undefined && params.sessionKey !== source.sessionKey))) ||
+    Boolean(params.cliSessionId) ||
+    params.cliSessionBinding?.forceReuse === true;
+  const declinedEarly: CliHistoryBoundaryDecline =
+    params.sessionManager || !borrowed ? "fresh" : "refused";
   if (
     params.sessionManager ||
     !source ||
@@ -64,7 +76,7 @@ export async function prepareCliHistoryBoundary(
     (params.sessionKey !== undefined && params.sessionKey !== source.sessionKey) ||
     !resolveAdmittedRunActiveAssertion(params.admittedRunContext, params.abortSignal)
   ) {
-    return { declined: "fresh" };
+    return { declined: declinedEarly };
   }
   const target = { ...source, storePath: resolveSessionTranscriptDatabasePath(source) };
   const assertCurrent = createCliRunCurrentAssertion(params);
@@ -72,7 +84,7 @@ export async function prepareCliHistoryBoundary(
   assertCurrent();
   const snapshot: InternalSessionEntry | undefined = loadSessionEntryReadOnly(target);
   if (!snapshot || snapshot.sessionId !== target.sessionId) {
-    return { declined: "fresh" };
+    return { declined: declinedEarly };
   }
   const watermark = readSessionTranscriptWatermark(target);
   const admission = resolveSessionTranscriptReadFence(target);
