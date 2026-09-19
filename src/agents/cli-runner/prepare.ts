@@ -2066,8 +2066,16 @@ async function prepareCliRunContextWithinReadFence(
     // Explicit caller-owned memory remains input; it cannot authorize borrowed durable history.
     const historyAllowed = params.sessionManager !== undefined || cliHistoryWriter !== undefined;
     // Native compatibility and transcript account ownership are independent gates.
+    // When history ownership is unestablished we must not blindly refuse the
+    // transcript: a genuine auth change (auth-profile / auth-epoch invalidation)
+    // is a real account boundary and stays refused, but a *fresh* session that
+    // never established a writer is not an identity change — it should reseed
+    // like a missing transcript. Emitting "auth-unknown" for the fresh-session
+    // case discards context on every session-less turn even when auth is stable.
     const rawTranscriptReseedReason = !historyAllowed
-      ? "auth-unknown"
+      ? invalidatedReason === "auth-profile" || invalidatedReason === "auth-epoch"
+        ? invalidatedReason
+        : (ignoreCliSessionCandidate ? undefined : "missing-transcript")
       : reusableCliSessionId
         ? "session-expired"
         : (invalidatedReason ?? (ignoreCliSessionCandidate ? undefined : "missing-transcript"));
