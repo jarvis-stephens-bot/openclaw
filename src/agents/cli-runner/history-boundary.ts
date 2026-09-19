@@ -152,6 +152,16 @@ export async function prepareCliHistoryBoundary(
         .digest("hex")
     : undefined;
   const writerRunId = params.expectedWriterRunId ?? params.runId;
+  // A session-less turn (no reused/forced native handle) whose transcript reconstructs to
+  // nothing: the only no-boundary shape safe to reseed, since there is no owned content to
+  // leak. Evaluated once and reused for both the `allowed` upgrade and the fresh/refused
+  // classification below. Computed lazily so a non-session-less turn never scans.
+  const sessionLessStart = !params.cliSessionId && !params.cliSessionBinding;
+  let provenEmptyStart: boolean | undefined;
+  const isProvenEmptyStart = () => {
+    provenEmptyStart ??= sessionLessStart && isProvenEmptyTranscript(target);
+    return provenEmptyStart;
+  };
   let allowed = Boolean(
     fingerprint &&
     currentUserIsLast &&
@@ -163,14 +173,8 @@ export async function prepareCliHistoryBoundary(
     (stored.maxSeq === priorMaxSeq ||
       (admission && stored.writerRunId === writerRunId && stored.maxSeq === watermark.maxSeq)),
   );
-  if (
-    !allowed &&
-    fingerprint &&
-    currentUserIsLast &&
-    !params.cliSessionId &&
-    !params.cliSessionBinding
-  ) {
-    allowed = isProvenEmptyTranscript(target);
+  if (!allowed && fingerprint && currentUserIsLast && sessionLessStart) {
+    allowed = isProvenEmptyStart();
   }
   allowed &&= watermark.maxSeq === null || typeof watermark.generation === "string";
   // Classify why a writer could not be established, so the caller reseeds a genuinely
@@ -178,11 +182,13 @@ export async function prepareCliHistoryBoundary(
   // fingerprint is the current account's own history (safe to reseed like a missing
   // transcript); a boundary owned by a different fingerprint, or an untrusted
   // "unknown"-state boundary, is an account transition that must stay refused. With no
-  // prior boundary at all, only a session-less turn (no reused/forced native handle) is
-  // fresh — a borrowed native handle cannot authorize unverified durable history.
+  // prior boundary at all, ownership cannot be proven from a fingerprint alone (there is
+  // no boundary to match it against), so only a session-less turn whose transcript is
+  // proven empty is fresh — uncovered content or a revoked/absent credential stays refused,
+  // exactly as master did. A borrowed native handle never authorizes unverified history.
   const ownedByCurrent =
     isKnownCliHistoryBoundary(stored) && stored.authFingerprint === fingerprint;
-  const isFreshStart = stored ? ownedByCurrent : !params.cliSessionId && !params.cliSessionBinding;
+  const isFreshStart = stored ? ownedByCurrent : isProvenEmptyStart();
   const declined: CliHistoryBoundaryDecline = isFreshStart ? "fresh" : "refused";
   if (!allowed && !stored) {
     return { declined };

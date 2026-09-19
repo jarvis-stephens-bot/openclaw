@@ -203,4 +203,24 @@ describe("CLI fresh session-less reseed boundary", () => {
     expect(result.writer).toBeUndefined();
     expect(result.declined).toBe("fresh");
   });
+
+  it("refuses reseed for a revoked/absent credential over uncovered content with no boundary", async () => {
+    // No auth profile is saved and none is passed, so prepare resolves NO credential — the
+    // revoked/absent-owner case. The session entry exists and matches (created by the
+    // fixture) but carries no cliHistoryBoundary, and transcript content is present. This is
+    // the later `!stored` exit: ownership cannot be proven from an absent fingerprint and
+    // there is no boundary to match against, so a session-less turn over uncovered content
+    // must stay refused — master's behavior — not reseed on `!cliSessionId` alone.
+    fixture.appendTranscript({
+      id: "msg-1",
+      parentId: null,
+      timestamp: new Date(1).toISOString(),
+      message: makeUserMessage("prior unowned ask", 1),
+    });
+
+    const context = await fixture.prepare();
+
+    expect(context.cliHistoryWriter).toBeUndefined();
+    expect(context.openClawHistoryPrompt).toBeUndefined();
+  });
 });
