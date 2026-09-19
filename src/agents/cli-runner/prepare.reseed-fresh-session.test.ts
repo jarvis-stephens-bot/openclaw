@@ -1,11 +1,12 @@
-// Extracted sibling of prepare.test.ts (kept separate to respect the per-file line
-// cap). The authority-chain proof for the fresh-session reseed boundary, asserted at what
-// actually becomes CLI input: the revised owner admits genuinely COVERED same-account
-// context (appended through the owned writer) and rejects foreign, uncovered (appended
-// outside the writer), snapshotless, and revoked history — and its live coverage guard
-// still holds through dispatch, rejecting coverage invalidated between preparation and the
-// final CLI read. A fingerprint match alone never authorizes reseed; only proven coverage
-// (or a proven-empty session-less start) does.
+// Extracted sibling of prepare.test.ts (kept separate to respect the per-file line cap).
+// The authority-chain proof for the CLI history-reseed boundary, asserted at what actually
+// becomes CLI input. The invariant these tests pin: a reseed prompt is emitted ONLY
+// alongside a live cliHistoryWriter, so execute.ts's assertReadable always covers it.
+// prepareCliHistoryBoundary returns a writer ONLY for the covered, account-owned path (an
+// established same-account boundary or a proven-empty start that also establishes a writer);
+// every other decline returns undefined, mapping to "auth-unknown" (no reseed) exactly as
+// master refused. A fingerprint match alone never authorizes reseed; a writerless turn is
+// never reseeded. These are the narrow guarantees the four prior review rounds kept losing.
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { makeUserMessage } from "../../../test/helpers/user-message.js";
@@ -29,40 +30,68 @@ import {
 } from "./prepare.test-support.js";
 
 /** The prompt that execute.ts assembles as final CLI input (openClawHistoryPrompt when a
- * fresh reseed is present, else the prepended durable context on the plain prompt). */
+ * reseed is present, else the prepended durable context on the plain prompt). */
 function finalCliInput(context: Awaited<ReturnType<typeof prepareCliRunContext>>): string {
   return context.openClawHistoryPrompt ?? context.promptForHooks ?? context.params.prompt;
 }
 
-describe("CLI fresh session-less reseed boundary", () => {
+/** The invariant the narrow design enforces by construction: a reseed prompt is only ever
+ * emitted when a live cliHistoryWriter accompanies it (so execute.ts installs assertReadable
+ * over the later transcript read). No context can carry a reseed prompt with no writer. */
+function assertReseedImpliesWriter(
+  context: Awaited<ReturnType<typeof prepareCliRunContext>>,
+): void {
+  if (context.openClawHistoryPrompt !== undefined) {
+    expect(context.cliHistoryWriter).toBeDefined();
+  }
+}
+
+const STABLE_TOKEN = "stable-account";
+
+describe("CLI history reseed boundary", () => {
   let fixture: ReturnType<typeof createCliRunnerPrepareFixture>;
   const cleanups: Array<() => Promise<void> | void> = [];
 
-  // Establishes an owned CLI history writer under a stable credential. Returns a prepare()
-  // closure for a later same-account turn, plus the live writer so a test can advance the
-  // transcript through it (COVERED coverage) or deliberately outside it (UNCOVERED). A
-  // later prepare then reseeds only when coverage is genuinely contiguous.
-  async function establishOwnedAuth(otherAccount = false) {
-    const { dir, sessionTarget } = fixture.session;
+  // Saves an auth-profile store so prepare resolves a stable credential, and returns a
+  // prepare() closure bound to it. Does NOT pre-establish a history writer, so a first turn
+  // under this account sees no prior boundary (the genuinely-fresh shape).
+  function saveStableAccount(otherAccount = false) {
+    const { dir } = fixture.session;
     const agentDir = path.join(dir, "agents", "main", "agent");
     const authProfileId = "history-test:account";
-    const credential = { type: "token" as const, provider: "test-cli", token: "stable-account" };
     saveAuthProfileStore(
       {
         version: 1,
         profiles: {
-          [authProfileId]: credential,
+          [authProfileId]: { type: "token", provider: "test-cli", token: STABLE_TOKEN },
           "history-test:other": { type: "token", provider: "test-cli", token: "other-account" },
         },
       },
       agentDir,
     );
+    const prepare = (overrides: Parameters<typeof fixture.prepare>[0] = {}) =>
+      fixture.prepare({
+        agentDir,
+        authProfileId: otherAccount ? "history-test:other" : authProfileId,
+        ...overrides,
+      });
+    return { agentDir, prepare };
+  }
+
+  // Establishes an owned CLI history writer under the stable credential, then returns a
+  // prepare() closure for a later same-account turn plus the live writer, so a test can
+  // advance the transcript THROUGH the writer (covered) or deliberately outside it
+  // (uncovered). A later prepare then reseeds only when coverage is genuinely contiguous.
+  async function establishOwnedAuth(otherAccount = false) {
+    const { dir, sessionTarget } = fixture.session;
+    const { agentDir, prepare: preparePartial } = saveStableAccount(otherAccount);
+    const credential = { type: "token" as const, provider: "test-cli", token: STABLE_TOKEN };
     const runId = "fresh-reseed-fixture";
     await patchSessionEntryCore(sessionTarget, (entry) => ({ ...entry, activeWriterRunId: runId }));
     const admission = prepareSystemAgentRunAdmission({}, runId, "main", "fresh-reseed-fixture");
     cleanups.push(() => admission.close());
     const admittedRunContext = await admission.admit("embedded");
-    const { writer } = await prepareCliHistoryBoundary(
+    const writer = await prepareCliHistoryBoundary(
       {
         admittedRunContext,
         runId,
@@ -81,9 +110,7 @@ describe("CLI fresh session-less reseed boundary", () => {
     );
     expect(writer).toBeDefined();
     const prepare = (overrides: Parameters<typeof fixture.prepare>[0] = {}) =>
-      fixture.prepare({
-        agentDir,
-        authProfileId: otherAccount ? "history-test:other" : authProfileId,
+      preparePartial({
         runId,
         admittedRunContext,
         sessionKey: sessionTarget.sessionKey,
@@ -134,17 +161,36 @@ describe("CLI fresh session-less reseed boundary", () => {
     }
   });
 
-  it("admits COVERED same-account history into the final CLI input", async () => {
+  it("admits COVERED same-account history into the final CLI input with a live writer", async () => {
     const owned = await establishOwnedAuth();
     // Advance the transcript THROUGH the owned writer, so its coverage proof stays
-    // contiguous. This is genuine same-account recovery — the writer re-establishes and the
-    // prior content reaches what execute.ts sends as the CLI prompt.
+    // contiguous. This is genuine same-account recovery: the writer re-establishes and the
+    // prior content reaches what execute.ts sends as the CLI prompt — reseed WITH a writer.
     owned.appendCovered("prior covered ask");
 
     const context = await owned.prepare();
 
     expect(context.cliHistoryWriter).toBeDefined();
     expect(finalCliInput(context)).toContain("prior covered ask");
+    expect(finalCliInput(context)).toContain("latest ask");
+    assertReseedImpliesWriter(context);
+  });
+
+  it("reseeds a genuinely fresh session-less turn only while establishing a live writer", async () => {
+    // A first turn under a stable credential with an empty transcript and no prior boundary:
+    // the honest win. This is reseedable BECAUSE it establishes a writer (proven-empty start),
+    // so execute.ts binds assertReadable over the read — never a writerless reseed.
+    const { sessionTarget } = fixture.session;
+    const { prepare } = saveStableAccount();
+    await patchSessionEntryCore(sessionTarget, (entry) => ({
+      ...entry,
+      activeWriterRunId: "run-test",
+    }));
+
+    const context = await prepare();
+
+    expect(context.cliHistoryWriter).toBeDefined();
+    assertReseedImpliesWriter(context);
     expect(finalCliInput(context)).toContain("latest ask");
   });
 
@@ -166,6 +212,7 @@ describe("CLI fresh session-less reseed boundary", () => {
     expect(context.cliHistoryWriter).toBeUndefined();
     expect(context.openClawHistoryPrompt).toBeUndefined();
     expect(finalCliInput(context)).not.toContain("uncovered same-account ask");
+    assertReseedImpliesWriter(context);
   });
 
   it("rejects a coverage invalidation between preparation and the dispatch read guard", async () => {
@@ -203,44 +250,65 @@ describe("CLI fresh session-less reseed boundary", () => {
     expect(context.cliHistoryWriter).toBeUndefined();
     expect(context.openClawHistoryPrompt).toBeUndefined();
     expect(finalCliInput(context)).not.toContain("prior account-owned ask");
+    assertReseedImpliesWriter(context);
   });
 
-  it("refuses reseed when the boundary snapshot is missing but uncovered content remains", async () => {
-    const owned = await establishOwnedAuth();
-    const { sessionTarget } = fixture.session;
+  it("refuses reseed for a revoked/absent credential over uncovered content with no boundary", async () => {
+    // No auth profile is saved and none is passed, so prepare resolves NO credential — the
+    // revoked/absent-owner case. The session entry exists and matches (created by the
+    // fixture) but carries no cliHistoryBoundary, and transcript content is present. Ownership
+    // cannot be proven from an absent fingerprint, so a session-less turn over uncovered
+    // content stays refused (master's behavior), not reseeded on `!cliSessionId` alone.
     fixture.appendTranscript({
       id: "msg-1",
       parentId: null,
       timestamp: new Date(1).toISOString(),
-      message: makeUserMessage("prior uncovered ask", 1),
+      message: makeUserMessage("prior unowned ask", 1),
     });
-    // Drop the boundary entry to a mismatched session id while the transcript content
-    // survives — an entry pruned/reset or a projection race. This is exactly the early
-    // return where `loadSessionEntryReadOnly` yields no matching snapshot AFTER the
-    // same-session checks passed. Ownership was never verified, so the content must NOT
-    // be replayed; master refused it, and reseeding it would leak uncovered history.
-    replaceSessionEntrySync(sessionTarget, { sessionId: "mismatched-session", updatedAt: 0 });
 
-    const context = await owned.prepare();
+    const context = await fixture.prepare();
 
     expect(context.cliHistoryWriter).toBeUndefined();
     expect(context.openClawHistoryPrompt).toBeUndefined();
+    assertReseedImpliesWriter(context);
   });
 
-  it("classifies a snapshotless but proven-empty transcript as a fresh start", async () => {
+  it("refuses a writerless session-less turn instead of reseeding (defect #4, and the regression)", async () => {
+    // The behavior change from the over-broad version, and the regression proof. A stable
+    // credential and an EMPTY transcript, but the boundary snapshot no longer matches the
+    // session (pruned/reset or a projection race) — so no writer can be established. The
+    // broad code classified this as a no-writer "fresh" start and reseeded, emitting an
+    // openClawHistoryPrompt with NO cliHistoryWriter: a reseed that execute.ts's assertReadable
+    // could not cover (a TOCTOU read past the empty-history decision). The narrow design
+    // refuses every writerless turn, so the reseed prompt is absent. This assertion fails on
+    // the un-narrowed code (prompt present, writer absent) and passes now.
+    const { prepare } = saveStableAccount();
+    const { sessionTarget } = fixture.session;
+    replaceSessionEntrySync(sessionTarget, { sessionId: "mismatched-session", updatedAt: 0 });
+
+    const context = await prepare();
+
+    expect(context.cliHistoryWriter).toBeUndefined();
+    expect(context.openClawHistoryPrompt).toBeUndefined();
+    // The core invariant, stated directly: no reseed prompt may exist without a live writer.
+    assertReseedImpliesWriter(context);
+  });
+
+  it("proves the no-writer decline is what prepareCliHistoryBoundary itself returns", async () => {
+    // The unit-level companion to the regression above: the boundary preparer returns no
+    // writer for the mismatched-snapshot session-less turn, which prepare.ts maps to
+    // "auth-unknown" (no reseed). This is the single fact that closes defect #4 by
+    // construction — a writerless decline can never authorize a later transcript read.
     const { dir, sessionTarget } = fixture.session;
     const agentDir = path.join(dir, "agents", "main", "agent");
-    const credential = { type: "token" as const, provider: "test-cli", token: "stable-account" };
+    const credential = { type: "token" as const, provider: "test-cli", token: STABLE_TOKEN };
     const runId = "snapshotless-empty";
     const admission = prepareSystemAgentRunAdmission({}, runId, "main", "snapshotless-empty");
     cleanups.push(() => admission.close());
     const admittedRunContext = await admission.admit("embedded");
-    // Mismatched boundary snapshot, but no transcript content beyond the session header:
-    // there is nothing to leak, so the missing-snapshot early return must still classify
-    // this genuinely session-less turn as "fresh" (reseedable) rather than over-refusing.
     replaceSessionEntrySync(sessionTarget, { sessionId: "mismatched-session", updatedAt: 0 });
 
-    const result = await prepareCliHistoryBoundary(
+    const writer = await prepareCliHistoryBoundary(
       {
         admittedRunContext,
         runId,
@@ -258,27 +326,6 @@ describe("CLI fresh session-less reseed boundary", () => {
       { credential },
     );
 
-    expect(result.writer).toBeUndefined();
-    expect(result.declined).toBe("fresh");
-  });
-
-  it("refuses reseed for a revoked/absent credential over uncovered content with no boundary", async () => {
-    // No auth profile is saved and none is passed, so prepare resolves NO credential — the
-    // revoked/absent-owner case. The session entry exists and matches (created by the
-    // fixture) but carries no cliHistoryBoundary, and transcript content is present. This is
-    // the later `!stored` exit: ownership cannot be proven from an absent fingerprint and
-    // there is no boundary to match against, so a session-less turn over uncovered content
-    // must stay refused — master's behavior — not reseed on `!cliSessionId` alone.
-    fixture.appendTranscript({
-      id: "msg-1",
-      parentId: null,
-      timestamp: new Date(1).toISOString(),
-      message: makeUserMessage("prior unowned ask", 1),
-    });
-
-    const context = await fixture.prepare();
-
-    expect(context.cliHistoryWriter).toBeUndefined();
-    expect(context.openClawHistoryPrompt).toBeUndefined();
+    expect(writer).toBeUndefined();
   });
 });
